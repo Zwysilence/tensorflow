@@ -1223,6 +1223,23 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
                                  GraphDef* optimized_graph) {
   *optimized_graph = item.graph;
 
+  if (optimization_level_ == RewriterConfig::DEFAULT_MEM_OPT)
+    VLOG(2) << "MemoryOptimizer is using DEFAULT_MEM_OPT";
+  elif (optimization_level_ == RewriterConfig::NO_MEM_OPT)
+    VLOG(2) << "MemoryOptimizer is using NO_MEM_OPT";
+  elif (optimization_level_ == RewriterConfig::MANUAL)
+    VLOG(2) << "MemoryOptimizer is using MANUAL";
+  elif (optimization_level_ == RewriterConfig::SWAPPING_HEURISTICS)
+    VLOG(2) << "MemoryOptimizer is using SWAPPING_HEURISTICS";
+  elif (optimization_level_ == RewriterConfig::RECOMPUTATION_HEURISTICS)
+    VLOG(2) << "MemoryOptimizer is using RECOMPUTATION_HEURISTICS";
+  elif (optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS)
+    VLOG(2) << "MemoryOptimizer is using SCHEDULING_HEURISTICS";
+  elif (optimization_level_ == RewriterConfig::HEURISTICS)
+    VLOG(2) << "MemoryOptimizer is using HEURISTICS";
+  else
+    VLOG(2) << "MemoryOptimizerError: unrecognized optimizer!";
+  
   RecomputationRewritingPass(optimization_level_,
                              recomputation_targets_name_scope_, optimized_graph,
                              item);
