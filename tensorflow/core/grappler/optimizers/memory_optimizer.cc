@@ -1224,21 +1224,30 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   *optimized_graph = item.graph;
 
   if (optimization_level_ == RewriterConfig::DEFAULT_MEM_OPT)
-    VLOG(2) << "MemoryOptimizer is using DEFAULT_MEM_OPT";
-  elif (optimization_level_ == RewriterConfig::NO_MEM_OPT)
-    VLOG(2) << "MemoryOptimizer is using NO_MEM_OPT";
-  elif (optimization_level_ == RewriterConfig::MANUAL)
-    VLOG(2) << "MemoryOptimizer is using MANUAL";
-  elif (optimization_level_ == RewriterConfig::SWAPPING_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using SWAPPING_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::RECOMPUTATION_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using RECOMPUTATION_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using SCHEDULING_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using HEURISTICS";
+    printf("MemoryOptimizer is using DEFAULT_MEM_OPT\n");
+    // VLOG(1) << "MemoryOptimizer is using DEFAULT_MEM_OPT";
+  else if (optimization_level_ == RewriterConfig::NO_MEM_OPT)
+    // this iff should never happen as the "NO_MEM_OPT" optimizer would not be pushed into optimizers
+    printf("MemoryOptimizer is using NO_MEM_OPT\n");
+    // VLOG(1) << "MemoryOptimizer is using NO_MEM_OPT";
+  else if (optimization_level_ == RewriterConfig::MANUAL)
+    printf("MemoryOptimizer is using MANUAL\n");
+    // VLOG(1) << "MemoryOptimizer is using MANUAL";
+  else if (optimization_level_ == RewriterConfig::SWAPPING_HEURISTICS)
+    printf("MemoryOptimizer is using SWAPPING_HEURISTICS\n");
+    // VLOG(1) << "MemoryOptimizer is using SWAPPING_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::RECOMPUTATION_HEURISTICS)
+    printf("MemoryOptimizer is using RECOMPUTATION_HEURISTICS\n");
+    // VLOG(1) << "MemoryOptimizer is using RECOMPUTATION_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS)
+    printf("MemoryOptimizer is using SCHEDULING_HEURISTICS\n");
+    // VLOG(1) << "MemoryOptimizer is using SCHEDULING_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::HEURISTICS)
+    printf("MemoryOptimizer is using HEURISTICS\n");
+    // VLOG(1) << "MemoryOptimizer is using HEURISTICS";
   else
-    VLOG(2) << "MemoryOptimizerError: unrecognized optimizer!";
+    printf("MemoryOptimizerError: unrecognized optimizer!\n");
+    // VLOG(1) << "MemoryOptimizerError: unrecognized optimizer!";
   
   RecomputationRewritingPass(optimization_level_,
                              recomputation_targets_name_scope_, optimized_graph,
