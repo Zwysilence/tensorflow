@@ -1115,24 +1115,27 @@ static bool IdentifySwappingCandidates(
 
     char* strtmp = getenv("gpu_memory_limit");
     int64 device_memory_size = prop.memory_size();
-    
+
     char* tmp = getenv("mem_require_saving");
     int64 mem_require_saving = 0;
-    if(tmp == NULL)
-        printf("Additional Mem require saving is not set, using default 0!\n");
+    if (tmp == NULL)
+    {
+      printf("Additional Mem require saving is not set, use default 0!\n");
+    }
     else
     {
-        mem_require_saving = atol(tmp);
-        printf("Additional Mem required savings is %lld", mem_require_saving);
+      mem_require_saving = atol(tmp);
+      printf("Additional Mem required savings is %lld\n", mem_require_saving);
     }
 
-    // printf("Mem require saving is %lld", mem_require_saving);
     if (strtmp == NULL)
-        printf("GPU memory limit not set!\n");
+    {
+      printf("GPU memory limit is not set, use default the whole GPU memory!\n");
+    }
     else
     {
-        device_memory_size = atol(strtmp);
-        printf("GPU memory limit is %lld\n", device_memory_size);
+      device_memory_size = atol(strtmp);
+      printf("GPU memory limit is %lld\n", device_memory_size);
     }
 
     if (mem_usage.used_memory <= device_memory_size)
@@ -1149,12 +1152,10 @@ static bool IdentifySwappingCandidates(
       VirtualCluster vcluster(cluster->GetDevices());
       if (!vcluster.Provision().ok())
       {
-        printf("vcluster Provision is not ok!\n");
         return false;
       }
       if (!vcluster.Initialize(*item).ok())
       {
-        printf("vcluster Initialize is not ok!\n");
         return false;
       }
       RunMetadata metadata;
@@ -1276,7 +1277,7 @@ static bool IdentifySwappingCandidates(
         mem_state.push_back(mem_info);
       }
     }
-    printf("number of mem_state is %ld\n", mem_state.size());
+    // printf("number of mem_state is %ld\n", mem_state.size());
 
     // Sort by fitness
     std::sort(mem_state.begin(), mem_state.end());
@@ -1289,7 +1290,7 @@ static bool IdentifySwappingCandidates(
                 << fanout_to_swap.port_id << " of tensor "
                 << mem_info.port.node->name() << ":" << mem_info.port.port_id
                 << " of size " << mem_info.memory_used;
-        std::cout << fanout_to_swap.node << std::endl;
+        // std::cout << fanout_to_swap.node << std::endl;
         (*nodes_to_swap)[fanout_to_swap.node].inputs_to_swap.push_back(
             fanout_to_swap.port_id);
       }
@@ -1300,10 +1301,11 @@ static bool IdentifySwappingCandidates(
 
       if (required_savings < mem_require_saving)
       {
-        printf("required saving < 0\n");
+        printf("[IdentifySwappingCandidates] required saving < 0\n");
+        printf("[IdentifySwappingCandidates] Final number of nodes to swap is %d\n", nodes_to_swap->size());
         break;
       }
-      printf("number of nodes to swap is %d", (*nodes_to_swap).size());
+      // printf("number of nodes to swap is %d", (*nodes_to_swap).size());
     }
   }
   return updated_graph;
@@ -1319,9 +1321,9 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
       optimization_level == RewriterConfig::HEURISTICS)
   {
     // Use heuristics to figure out what needs to be swapped;
-    printf("Need to identify SwappingCandidates.\n");
+    // printf("Need to identify SwappingCandidates.\n");
     IdentifySwappingCandidates(cluster, item, skip_list, &nodes_to_swap);
-    printf("SwappingCandidates is over, number of node to swap is %lld.\n", nodes_to_swap.size());
+    // printf("SwappingCandidates is over, number of node to swap is %lld.\n", nodes_to_swap.size());
   }
   // Look for manual annotatations in the graph.
   for (auto &node : *item->graph.mutable_node())
@@ -1392,6 +1394,20 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   }
   GraphView view(&item->graph);
 
+
+  // Test out_trigger
+  char* tmp = getenv("iff_out_trigger");
+  bool iff_out_trigger = false;
+  if (tmp == NULL)
+  {
+    printf("Use the default out_trigger, i.e., ON!\n");
+  }
+  else
+  {
+    printf("Disable the out_trigger!\n");
+    iff_out_trigger = true;
+  }
+
   bool updated_graph = false;
 
   for (auto &swap : nodes_to_swap)
@@ -1412,20 +1428,16 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
     // If we failed, don't attempt to reprocess this node in a subsequent pass.
     if (!in_trigger)
     {
-      printf("in trigger is empty\n");
+      // printf("in trigger is empty\n");
       skip_list->insert(node->name());
       continue;
-    }
-    else
-    {
-      printf("in trigger is not empty\n");
     }
 
     // Swap all the tensors that are marked with the 'swap_to_host' attribute.
     for (int input_id : swap_info.inputs_to_swap)
     {
       string input_name = strings::StrCat(node->name(), ":", input_id);
-      std::cout << "input name is " << input_name << std::endl;
+      // std::cout << "input name is " << input_name << std::endl;
       if (skip_list->find(input_name) != skip_list->end())
       {
         //can`t find or arrived the end
@@ -1444,25 +1456,28 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
           FindSwapOutTrigger(node, input_id, view, execution_times);
       if (!out_trigger)
       {
-        printf("out trigger is empty\n");
+        // printf("out trigger is empty\n");
         continue;
-      }
-      else
-      {
-        printf("out trigger is not empty\n");
       }
       std::pair<NodeDef *, NodeDef *> swap_nodes;
       if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
                .ok())
       {
-        printf("build swap pair is not built.");
+        // printf("build swap pair is not built.");
         continue;
       }
+ 
+      // Log the successful swapping node info
+      printf("[SwappingPass] SuccSwappingNodeInfo: %s: %d\n", node->name().c_str(), input_id);
       *swap_nodes.first->add_input() = node->input(input_id);
       *node->mutable_input(input_id) = swap_nodes.second->name();
 
+
       // Add the control dependencies needed to delay the execution of the swap.
-      // out_trigger->add_input(strings::StrCat("^", swap_nodes.first->name()));
+      if (!iff_out_trigger)
+      {
+        out_trigger->add_input(strings::StrCat("^", swap_nodes.first->name()));
+      }
       swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
 
       // Make sure we won't try to swap the swap nodes in subsequent passes.
@@ -1515,15 +1530,16 @@ Status MemoryOptimizer::Optimize(Cluster *cluster, const GrapplerItem &item,
   bool updated_graph = true;
   for (int i = 0; i < 25 && updated_graph; ++i)
   {
+    printf("[Mem_Optimizer] Iteration: %d\n", i);
     updated_graph = false;
     if ((optimization_level_ == RewriterConfig::DEFAULT_MEM_OPT ||
          optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS ||
          optimization_level_ == RewriterConfig::HEURISTICS) &&
         cluster != nullptr)
     {
-      printf("%d.SchedulingPass is ready!\n", i);
+      // printf("%d.SchedulingPass is ready!\n", i);
       updated_graph |= SchedulingPass(cluster, &optimized_item);
-      printf("%d.SchedulingPass is over!\n", i);
+      // printf("%d.SchedulingPass is over!\n", i);
     }
 
     if ((optimization_level_ == RewriterConfig::DEFAULT_MEM_OPT ||
@@ -1532,10 +1548,10 @@ Status MemoryOptimizer::Optimize(Cluster *cluster, const GrapplerItem &item,
          optimization_level_ == RewriterConfig::MANUAL) &&
         cluster != nullptr)
     {
-      printf("%d.SwappingPass is ready!\n", i);
+      // printf("%d.SwappingPass is ready!\n", i);
       updated_graph |= SwappingPass(optimization_level_, cluster,
                                     &optimized_item, &skip_list);
-      printf("%d.SwappingPass is over!\n", i);
+      // printf("%d.SwappingPass is over!\n", i);
     }
   }
 
