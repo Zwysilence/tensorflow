@@ -34,4 +34,12 @@ GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
               GpuIdUtil::ExecutorForCudaGpuId(cuda_gpu_id).ValueOrDie()),
           total_memory, gpu_options.allow_growth(), name) {}
 
+
+GPUDeviceContext* GPUBFCAllocator::GetGPUDeviceContext(Device* device) {
+  CHECK(device != nullptr);
+  CHECK(device->device_context_[0] != nullptr);
+
+  return device->device_context_[0];
+}
+
 }  // namespace tensorflow

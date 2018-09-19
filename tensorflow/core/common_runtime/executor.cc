@@ -1593,7 +1593,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       outputs.resize(item.num_outputs);
     } else {
       // Prepares inputs.
-      bool is_input_dead = false;
+      bool is_input_dead = false; 
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
       if (!s.ok()) {
