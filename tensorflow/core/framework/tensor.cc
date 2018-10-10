@@ -53,6 +53,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/platform/variant_coding.h"
 
+#include <string>
+
 namespace tensorflow {
 
 // Allow Tensors to be stored inside Variants with automatic
@@ -104,7 +106,18 @@ class Buffer : public BufferBase {
   Buffer(Allocator* a, int64 n, const AllocationAttributes& allocation_attr);
 
   void* data() const override { return data_; }
+  void set_data(void * data) override { data_ = (T*)data; }
   size_t size() const override { return sizeof(T) * elem_; }
+  void RecordTensorTrace(const string & tensor_name, const uint64 time_) {
+    //if (alloc_ == nullptr) return;
+    alloc_->RecordTensorTrace(tensor_name, time_);
+  }
+
+  void MapTensorToBuffer(const TensorParams &params) {
+    //if (alloc_ == nullptr) return;
+    alloc_->MapTensorToBuffer(params, this);
+    //alloc_->MapTensorToBuffer(params);
+  }
 
  private:
   T* data_;
@@ -625,6 +638,16 @@ void Tensor::CheckIsAlignedAndSingleElement() const {
 
 Tensor::~Tensor() { UnrefIfNonNull(buf_); }
 
+void Tensor::RecordTensorTrace(const string& tensor_name, uint64 time_) {
+  if (buf_ == nullptr) return;
+  buf_->RecordTensorTrace(tensor_name, time_);
+}
+
+void Tensor::MapTensorToBuffer(const TensorParams &params) {
+  if (buf_ == nullptr) return;
+  buf_->MapTensorToBuffer(params);
+}
+
 void Tensor::CopyFromInternal(const Tensor& other, const TensorShape& shape) {
   CHECK_EQ(shape.num_elements(), other.NumElements());
   // Data type will be overwritten if this == &other, since dtype is part of
@@ -758,6 +781,7 @@ class SubBuffer : public TensorBuffer {
   }
 
   void* data() const override { return data_; }
+  void set_data(void* data) override { data_ = (T*)data; }
   size_t size() const override { return sizeof(T) * elem_; }
   TensorBuffer* root_buffer() override { return root_; }
   void FillAllocationDescription(AllocationDescription* proto) const override {

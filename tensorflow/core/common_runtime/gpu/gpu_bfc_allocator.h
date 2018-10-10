@@ -20,6 +20,9 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <memory>
+#include <condition_variable>
+#include <utility>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
@@ -33,6 +36,11 @@ namespace gpu = ::perftools::gputools;
 
 namespace tensorflow {
 
+class TensorParams;
+class TensorBuffer;
+class Device;
+class DeviceContext;
+
 // A GPU memory allocator that implements a 'best-fit with coalescing'
 // algorithm.
 class GPUBFCAllocator : public BFCAllocator {
@@ -44,6 +52,39 @@ class GPUBFCAllocator : public BFCAllocator {
   GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
                   const GPUOptions& gpu_options, const string& name);
   virtual ~GPUBFCAllocator() {}
+
+  void SaveTensorTrace();
+
+  //void MapTensorToBuffer(const TensorParams& params);
+  void MapTensorToBuffer(const TensorParams& params, TensorBuffer* tensor_buf);
+
+  void RecordTensorTrace(const string& tensor_name, const uint64 _time);
+
+ private:
+
+  void SwapOut(const string& tensor_name);
+
+  void SwapIn(const string& tensor_name);
+
+  mutable mutex lock_;
+
+  std::unordered_map<std::string, TensorBuffer*> tensor_buffers_;
+
+  std::unordered_map<std::string, Device*> tensor_devices_;
+
+  std::unordered_map<std::string, DeviceContext*> tensor_devcxts_;
+
+  std::unordered_map<std::string, std::vector<uint64> > tensor2times_ GUARDED_BY(lock_);
+
+  std::unordered_map<std::string, bool> swap_nodes_;
+
+  std::unordered_map<std::string, std::pair<void*, int64> > swapped_tensors_;
+
+  typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
+
+  std::unordered_map<std::string, condition_variable_and_mutex> cv_mus_;
+
+  std::unordered_map<std::string, bool> tensor_ready_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };

@@ -813,7 +813,8 @@ class ExecutorState {
           has_value(other.has_value),
           val_field_is_set(other.val_field_is_set),
           alloc_attr(other.alloc_attr),
-          device_context(other.device_context) {
+          device_context(other.device_context),
+          tensor_name(other.tensor_name) {
       if (val_field_is_set) {
         val.Init(*other.val);
       }
@@ -832,6 +833,7 @@ class ExecutorState {
       val_field_is_set = other.val_field_is_set;
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
+      tensor_name = other.tensor_name;
       if (val_field_is_set) {
         val.Init(*other.val);
       }
@@ -848,6 +850,7 @@ class ExecutorState {
       val_field_is_set = other.val_field_is_set;
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
+      tensor_name = other.tensor_name;
       if (val_field_is_set) {
         val.Init(std::move(*other.val));
       }
@@ -873,6 +876,8 @@ class ExecutorState {
     bool has_value = false;
 
     bool val_field_is_set = false;
+
+    string tensor_name;
 
     // The attributes of the allocator that creates the tensor.
     AllocatorAttributes alloc_attr;
@@ -1306,7 +1311,25 @@ class ExecutorState {
                          int64 input_iter) const NO_THREAD_SAFETY_ANALYSIS {
     return input_frame->GetIteration(input_iter)->input_tensors;
   }
+
+  void TraceTensorInAllocator(const TensorValueVec* inputs);
+
+  void MapTensorToBuffer(Tensor* tensor, const string& tensor_name, Device* device, DeviceContext* dev_ctx);
 };
+
+void ExecutorState::TraceTensorInAllocator(const TensorValueVec* inputs) {
+  uint64 time_ = Env::Default()->NowMicros();
+  for(auto &tensor_val : *inputs) {
+    auto tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    tensor->RecordTensorTrace(tensor_val.name, time_);
+  }
+}
+
+void ExecutorState::MapTensorToBuffer(Tensor *tensor, const string & tensor_name, Device* device, DeviceContext * dev_ctx) {
+  if (tensor == nullptr) return;
+  tensor->MapTensorToBuffer({tensor_name, device, dev_ctx});
+}
 
 ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
     : vlog_(VLOG_IS_ON(1)),
@@ -1596,6 +1619,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       bool is_input_dead = false;
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
+      TraceTensorInAllocator(&inputs);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
@@ -1746,6 +1770,7 @@ Status ExecutorState::PrepareInputs(const NodeItem& item, Entry* first_input,
 
     // i-th input.
     TensorValue* inp = &(*inputs)[i];
+    inp->name = entry->tensor_name;
 
     // Only merge and transfer nodes can have no-value inputs.
     if (!entry->has_value) {
@@ -1873,6 +1898,10 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
     } else {
       Entry* out = &((*outputs)[i]);
 
+      string tensor_name = node->name() + ":" + std::to_string(i);
+
+      out->tensor_name = tensor_name;
+
       // Set the device context of the output entry.
       out->device_context = device_context;
 
@@ -1888,6 +1917,7 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
         dtype = val->dtype();
       }
       if (dtype == item.output_type(i)) {
+        MapTensorToBuffer(val.tensor, tensor_name, static_cast<Device*>(ctx->device()), ctx->op_device_context());
         if (stats && val.tensor->IsInitialized()) {
           nodestats::SetOutput(stats, i, val.tensor);
         }
@@ -2111,6 +2141,8 @@ void ExecutorState::ScheduleReady(const TaggedNodeSeq& ready,
     // Schedule to run all the ready ops in thread pool.
     for (auto& tagged_node : ready) {
       runner_([=]() { Process(tagged_node, scheduled_usec); });
+      //runner_(std::bind(&ExecutorState::Process, this, tagged_node,
+      //                    scheduled_usec));
     }
     return;
   }
@@ -2127,6 +2159,7 @@ void ExecutorState::ScheduleReady(const TaggedNodeSeq& ready,
         // do for this thread.
         runner_(std::bind(&ExecutorState::Process, this, *curr_expensive_node,
                           scheduled_usec));
+        // runner_([=]() { Process(*curr_expensive_node, scheduled_usec); });
       }
       curr_expensive_node = &tagged_node;
     }
@@ -2139,7 +2172,8 @@ void ExecutorState::ScheduleReady(const TaggedNodeSeq& ready,
       // There are inline nodes to run already. We dispatch this expensive
       // node to other thread.
       runner_(std::bind(&ExecutorState::Process, this, *curr_expensive_node,
-                        scheduled_usec));
+                      scheduled_usec));
+      // runner_([=]() { Process(*curr_expensive_node, scheduled_usec); });
     }
   }
 }

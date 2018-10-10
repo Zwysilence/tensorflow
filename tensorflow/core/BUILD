@@ -2425,6 +2425,7 @@ tf_cuda_library(
     srcs = ["common_runtime/direct_session.cc"],
     hdrs = [
         "common_runtime/direct_session.h",
+        "common_runtime/gpu/process_state.h",
         "util/env_var.h",
     ],
     copts = tf_copts(),
