@@ -32,6 +32,9 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 
+#include "tensorflow/core/common_runtime/gpu_device_context.h"
+#include "tensorflow/core/common_runtime/device.h"
+
 namespace gpu = ::perftools::gputools;
 
 namespace tensorflow {
