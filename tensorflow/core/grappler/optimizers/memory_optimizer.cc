@@ -20,6 +20,8 @@ limitations under the License.
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
+#include <string>
 
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -58,6 +60,23 @@ std::unordered_set<string> GetCheapToRecomputeOps() {
       "Rsqrt",    "Sigmoid",    "Sqrt",           "Square", "SquaredDifference",
       "Sub",      "Tile",       "Transpose"};
   return cheap_ops;
+}
+
+string ConvertGraphToString(const GraphDef * graph)
+{
+  std::string str;
+  str.append("Graph {\n");
+  for(const auto& node : graph->node()) {
+    str.append("\tNode {\n");
+    str.append("\t\tName: " + node.name() + "\n");
+    str.append("\t\tOp: " + node.op() + "\n");
+    for (const auto& input_node : node.input()) {
+      str.append("\t\tInput: " + input_node + "\n");
+    }
+    str.append("\t}\n");
+  }
+  str.append("}\n");
+  return str;
 }
 
 // Find recomputable ops which feed into target nodes.
@@ -965,10 +984,16 @@ static bool IdentifySwappingCandidates(
     }
     const GraphMemory::MemoryUsage& mem_usage = memory.GetPeakMemoryUsage(name);
 
-    if (mem_usage.used_memory <= prop.memory_size()) {
+    int64 extra = 1;
+    // extra = extra << 32;
+    int64 gpu_memory_size = prop.memory_size() - extra;
+    LOG(INFO) << "prop.memory_size() = " << prop.memory_size();
+    LOG(INFO) << "gpu_memory_size = " << gpu_memory_size;
+    if (mem_usage.used_memory <= gpu_memory_size) {
+      LOG(INFO) << "mem_usage.used_memory = " << mem_usage.used_memory << ", gpu_memory_size = " << gpu_memory_size;
       continue;
     }
-    int64 required_savings = mem_usage.used_memory - prop.memory_size();
+    int64 required_savings = mem_usage.used_memory - gpu_memory_size;
 
     std::unordered_map<string, Costs::NanoSeconds> op_completion_times;
     {
@@ -1062,6 +1087,7 @@ static bool IdentifySwappingCandidates(
         mem_info.uses_left.emplace_back(input);
         earliest_use = std::min(earliest_use, it->second);
       }
+      // LOG(INFO) << "valid = " << valid << ", mem_info.uses_left.empty() = " << mem_info.uses_left.empty();
       if (valid && !mem_info.uses_left.empty()) {
         // Compute the fitness: we need the tensor to be generated way away of
         // the time of peak memory usage (to ensure there is enough time to swap
@@ -1079,14 +1105,12 @@ static bool IdentifySwappingCandidates(
 
     // Sort by fitness
     std::sort(mem_state.begin(), mem_state.end());
-
     for (const MemInfo& mem_info : mem_state) {
       for (const GraphView::InputPort fanout_to_swap : mem_info.uses_left) {
         VLOG(1) << "Will swap fanout " << fanout_to_swap.node->name() << ":"
                 << fanout_to_swap.port_id << " of tensor "
                 << mem_info.port.node->name() << ":" << mem_info.port.port_id
                 << " of size " << mem_info.memory_used;
-
         (*nodes_to_swap)[fanout_to_swap.node].inputs_to_swap.push_back(
             fanout_to_swap.port_id);
       }
@@ -1110,6 +1134,7 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
     // Use heuristics to figure out what needs to be swapped;
     IdentifySwappingCandidates(cluster, item, skip_list, &nodes_to_swap);
   }
+  GraphView view(&item->graph);
   // Look for manual annotatations in the graph.
   for (auto& node : *item->graph.mutable_node()) {
     if (node.attr().count("_swap_to_host") != 0) {
@@ -1127,8 +1152,10 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   }
   if (nodes_to_swap.empty()) {
     // Nothing to do.
+    LOG(INFO) << "NODES_TO_SWAP IS EMPTY";
     return false;
   }
+  LOG(INFO) << "Size of nodes_to_swap is " << nodes_to_swap.size();
 
   // Estimate the size of the data to swap for each node.
   GraphProperties properties(*item);
@@ -1158,7 +1185,7 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   for (const auto& node : item->graph.node()) {
     name_map[node.name()] = &node;
   }
-  GraphView view(&item->graph);
+  //GraphView view(&item->graph);
 
   bool updated_graph = false;
 
@@ -1176,6 +1203,7 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
         FindSwapInTrigger(node, swap_info, name_map, execution_times);
     // If we failed, don't attempt to reprocess this node in a subsequent pass.
     if (!in_trigger) {
+      // LOG(INFO) << "Failed to find swap in trigger for " << node->name();
       skip_list->insert(node->name());
       continue;
     }
@@ -1210,6 +1238,11 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
       // Add the control dependencies needed to delay the execution of the swap.
       out_trigger->add_input(strings::StrCat("^", swap_nodes.first->name()));
       swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
+      // LOG(INFO) << "The tensor to swap is " << input_name << ", node has " << node->input_size() << " inputs";
+      // LOG(INFO) << "Swap out node is " << swap_nodes.first->name();
+      // LOG(INFO) << "Swap in node is " << swap_nodes.second->name();
+      // LOG(INFO) << "Swap out trigger node is " << out_trigger->name();
+      // LOG(INFO) << "Swap in trigger node is " << in_trigger->name();
 
       // Make sure we won't try to swap the swap nodes in subsequent passes.
       skip_list->insert(swap_nodes.first->name());
@@ -1224,21 +1257,29 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   *optimized_graph = item.graph;
 
   if (optimization_level_ == RewriterConfig::DEFAULT_MEM_OPT)
-    VLOG(2) << "MemoryOptimizer is using DEFAULT_MEM_OPT";
-  elif (optimization_level_ == RewriterConfig::NO_MEM_OPT)
-    VLOG(2) << "MemoryOptimizer is using NO_MEM_OPT";
-  elif (optimization_level_ == RewriterConfig::MANUAL)
-    VLOG(2) << "MemoryOptimizer is using MANUAL";
-  elif (optimization_level_ == RewriterConfig::SWAPPING_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using SWAPPING_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::RECOMPUTATION_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using RECOMPUTATION_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using SCHEDULING_HEURISTICS";
-  elif (optimization_level_ == RewriterConfig::HEURISTICS)
-    VLOG(2) << "MemoryOptimizer is using HEURISTICS";
+      printf("MemoryOptimizer is using DEFAULT_MEM_OPT\n");
+  // VLOG(1) << "MemoryOptimizer is using DEFAULT_MEM_OPT";
+  else if (optimization_level_ == RewriterConfig::NO_MEM_OPT)
+      printf("MemoryOptimizer is using NO_MEM_OPT\n");
+  // VLOG(1) << "MemoryOptimizer is using NO_MEM_OPT";
+  else if (optimization_level_ == RewriterConfig::MANUAL)
+      printf("MemoryOptimizer is using MANUAL\n");
+  // VLOG(1) << "MemoryOptimizer is using MANUAL";
+  else if (optimization_level_ == RewriterConfig::SWAPPING_HEURISTICS)
+      printf("MemoryOptimizer is using SWAPPING_HEURISTICS\n");
+  // VLOG(1) << "MemoryOptimizer is using SWAPPING_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::RECOMPUTATION_HEURISTICS)
+      printf("MemoryOptimizer is using RECOMPUTATION_HEURISTICS\n");
+  // VLOG(1) << "MemoryOptimizer is using RECOMPUTATION_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::SCHEDULING_HEURISTICS)
+      printf("MemoryOptimizer is using SCHEDULING_HEURISTICS\n");
+  // VLOG(1) << "MemoryOptimizer is using SCHEDULING_HEURISTICS";
+  else if (optimization_level_ == RewriterConfig::HEURISTICS)
+      printf("MemoryOptimizer is using HEURISTICS\n");
+  // VLOG(1) << "MemoryOptimizer is using HEURISTICS";
   else
-    VLOG(2) << "MemoryOptimizerError: unrecognized optimizer!";
+      printf("MemoryOptimizerError: unrecognized optimizer!\n");
+  // VLOG(1) << "MemoryOptimizerError: unrecognized optimizer!";
   
   RecomputationRewritingPass(optimization_level_,
                              recomputation_targets_name_scope_, optimized_graph,
@@ -1269,6 +1310,15 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   }
 
   optimized_graph->Swap(&optimized_item.graph);
+  // string filepath = "/vpublic01/frog/daihulin/tf_venv/benchmarks/scripts/tf_cnn_benchmarks/";
+  // std::fstream fout(filepath + "graph_def_after_optimization.txt", fout.out);
+  // if (!fout.is_open())
+  //   LOG(INFO) << "Faild to open " + filepath + "graph_def_after_optimization.txt\n";
+  // else {
+  //   fout << ConvertGraphToString(optimized_graph);
+  //   fout.close();
+  // }
+  
   return Status::OK();
 }
 
