@@ -15,10 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/direct_session.h"
 
+#include <map>
 #include <atomic>
 #include <string>
 #include <vector>
+#include <typeinfo>
+#include <type_traits>
+#include <fstream>
 
+#include "tensorflow/core/common_runtime/gpu/process_state.h"
 #include "tensorflow/core/common_runtime/constant_folding.h"
 #include "tensorflow/core/common_runtime/debugger_state_interface.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
@@ -298,6 +303,7 @@ DirectSession::DirectSession(const SessionOptions& options,
 }
 
 DirectSession::~DirectSession() {
+  LOG(INFO) << "~DirectSession()";
   if (!closed_) Close().IgnoreError();
   for (auto& it : partial_runs_) {
     it.second.reset(nullptr);
@@ -320,6 +326,7 @@ DirectSession::~DirectSession() {
 
   execution_state_.reset(nullptr);
   flib_def_.reset(nullptr);
+  ProcessState::delete_singleton();
 }
 
 Status DirectSession::MaybeInitializeExecutionState(
@@ -548,7 +555,6 @@ Status DirectSession::RunInternal(int64 step_id, const RunOptions& run_options,
     }
     item.executor->RunAsync(args, barrier->Get());
   }
-
   WaitForNotification(&run_state, &step_cancellation_manager,
                       run_options.timeout_in_ms() > 0
                           ? run_options.timeout_in_ms()
@@ -673,8 +679,221 @@ Status DirectSession::Run(const RunOptions& run_options,
     LogMemory::RecordStep(step_id, run_state_args.handle);
   }
 
+  auto now_in_usec = []() -> int64 { return Env::Default()->NowMicros(); };
+  int64 start_time = now_in_usec();
+
   TF_RETURN_IF_ERROR(RunInternal(step_id, run_options, &call_frame,
                                  executors_and_keys, run_metadata));
+
+  int64 end_time = now_in_usec();
+  LOG(INFO) << "Step " << step_id << " consumed " << end_time - start_time << "\n";
+
+  const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
+  if (do_trace) {
+    // Get execution time of nodes that are related with swap nodes
+    std::vector<const Node*> swap_out_nodes;
+    std::vector<const Node*> swap_in_nodes;
+    std::vector<const Node*> swap_out_triggers;
+    std::vector<const Node*> swap_in_triggers;
+    std::vector<const Node*> swap_tensor_from_nodes;
+    std::vector<const Node*> swap_tensor_to_nodes;
+    std::vector<std::vector<const Node*> > inputs_of_swap_tensor_to_node;
+
+    // for (auto node_iter = node_range.begin(); node_iter != node_range.end(); ++node_iter)
+      // auto node = *node_iter;
+    LOG(INFO) << "Num of executors is " << executors_and_keys->items.size();
+    for (auto & item : executors_and_keys->items) {
+      for (Node * node : item.graph->nodes()) {
+        if (str_util::StartsWith(node->name(), "swap_out")) {
+          const Node * swap_out_node = nullptr;
+          const Node * swap_in_node = nullptr;
+          const Node * swap_out_trigger = nullptr;
+          const Node * swap_in_trigger = nullptr;
+          const Node * swap_tensor_from = nullptr;
+          const Node * swap_tensor_to = nullptr;
+          swap_out_node = node;
+          // std::cout << "Swap out node: " << node->name() << "\n";
+          // std::cout << "Size of in edges of swap out node: " << node->in_edges().size() << "\n";
+          // std::cout << "Size of out edges of swap out node: " << node->out_edges().size() << "\n";
+          auto out_edges_iter1 = swap_out_node->out_edges().begin();
+          if ((*out_edges_iter1)->IsControlEdge()) {
+            swap_out_trigger = (*out_edges_iter1)->dst();
+            swap_in_node = (*(++out_edges_iter1))->dst();
+          } else {
+            swap_in_node = (*out_edges_iter1)->dst();
+            swap_out_trigger = (*(++out_edges_iter1))->dst();
+          }
+
+          auto in_edges_iter1 = swap_out_node->in_edges().begin();
+          swap_tensor_from = (*in_edges_iter1)->src();
+
+          // std::cout << "Size of in edges of swap in node: " << swap_in_node->in_edges().size() << "\n";
+          // std::cout << "Size of out edges of swap in node: " << swap_in_node->out_edges().size() << "\n";
+          
+          auto out_edges_iter2 = swap_in_node->out_edges().begin();
+          swap_tensor_to = (*out_edges_iter2)->dst();
+          
+          auto in_edges_iter2 = swap_in_node->in_edges().begin();
+          if ((*in_edges_iter2)->IsControlEdge()) {
+            swap_in_trigger = (*in_edges_iter2)->src();
+            if ((*(++in_edges_iter2))->src() != swap_out_node) {
+              std::cout << "Error: regular input of swap in node is not equal to swap out node\n";
+            }
+          } else {
+            if ((*in_edges_iter2)->src() != swap_out_node) {
+              std::cout << "Error: regular input of swap in node is not equal to swap out node\n";
+            }
+            swap_in_trigger = (*(++in_edges_iter2))->src();
+          }
+          swap_out_nodes.push_back(swap_out_node);
+          swap_in_nodes.push_back(swap_in_node);
+          swap_out_triggers.push_back(swap_out_trigger);
+          swap_in_triggers.push_back(swap_in_trigger);
+          swap_tensor_from_nodes.push_back(swap_tensor_from);
+          swap_tensor_to_nodes.push_back(swap_tensor_to);
+
+          inputs_of_swap_tensor_to_node.push_back(std::vector<const Node*>());
+          auto &in_edges = swap_tensor_to->in_edges();
+          for (auto it=in_edges.begin(); it!=in_edges.end(); ++it) {
+            inputs_of_swap_tensor_to_node.back().push_back((*it)->src());
+          }
+        }
+      }
+    }
+
+    if (swap_out_nodes.size() != 0) {
+      typedef std::remove_reference<decltype(run_metadata->step_stats().dev_stats(0).node_stats(0))>::type node_stats_type;
+      auto search_for_node_stats = [run_metadata](const string &name) -> node_stats_type* {
+        for (int dev_i = 0; dev_i < run_metadata->step_stats().dev_stats_size(); ++dev_i) {
+          auto & dev_stats = run_metadata->step_stats().dev_stats(dev_i);
+          for (int i = 0; i < dev_stats.node_stats_size(); ++i) {
+            auto & node_stats = dev_stats.node_stats(i);
+            if (node_stats.node_name() == name) {
+              return &node_stats; 
+            }
+          } 
+        }
+        return nullptr;
+      };
+
+      // auto print_times = [](const string & prefix, const node_stats_type * node_stats) {
+      //   if (node_stats == nullptr)
+      //     return;
+      //   std::cout << prefix << ": name is " << node_stats->node_name() << "\n";
+      //   std::cout << prefix << ": scheduled_micros is " << node_stats->scheduled_micros() << "\n";
+      //   std::cout << prefix << ": all_start_micros is " << node_stats->all_start_micros() << "\n";
+      //   std::cout << prefix << ": op_start_rel_micros is " << node_stats->op_start_rel_micros() << "\n";
+      //   std::cout << prefix << ": op_end_rel_micros is " << node_stats->op_end_rel_micros() << "\n";
+      //   std::cout << prefix << ": all_end_rel_micros is " << node_stats->all_end_rel_micros() << "\n";
+      //   std::cout << "\n";
+      // };
+
+      // for (int pi = 0; pi < swap_out_nodes.size(); ++pi) {
+      //   std::vector<const Node*> nodes { swap_out_nodes[pi], swap_out_triggers[pi], 
+      //                                    swap_in_nodes[pi], swap_in_triggers[pi], 
+      //                                    swap_tensor_from_nodes[pi], swap_tensor_to_nodes[pi]};
+      //   std::vector<const node_stats_type*> node_stats_v;
+      //   for (auto node : nodes) {
+      //     auto node_stats = search_for_node_stats(node->name());
+      //     if (node_stats == nullptr) {
+      //       std::cout << "Cannot find node stats for " << node->name() << "\n";
+      //       break;
+      //     }
+      //     node_stats_v.push_back(node_stats);
+      //   }
+
+      //   std::map<std::string, std::string> node_to_prefix = {
+      //     {swap_out_nodes[pi]->name(), "Swap out node"},
+      //     {swap_out_triggers[pi]->name(), "Swap out trigger"},
+      //     {swap_in_nodes[pi]->name(), "Swap in node"},
+      //     {swap_in_triggers[pi]->name(), "Swap in trigger"},
+      //     {swap_tensor_from_nodes[pi]->name(), "Swap tensor from"},
+      //     {swap_tensor_to_nodes[pi]->name(), "Swap tensor to"},
+      //   };
+      //   if (node_stats_v.size() == nodes.size()) {
+      //     // sort by scheduled_micros
+      //     std::sort(node_stats_v.begin(), node_stats_v.end(), [](const node_stats_type* n1, const node_stats_type* n2) {
+      //       return n1->scheduled_micros() < n2->scheduled_micros();
+      //     });
+      //     for (auto node_stats : node_stats_v) {
+      //       print_times(node_to_prefix[node_stats->node_name()], node_stats);
+      //     }
+      //     
+      //     std::cout << "\n";
+      //   }
+      // }
+
+      int64 total_delay = 0;
+      int64 timestamps_2018_9_1 = 1535731200000000;
+      std::string swap_nodes_info_filename = "/home/uniquesc/daihulin/tf_venv/benchmarks/scripts/tf_cnn_benchmarks/log/swap_nodes_step_" + std::to_string(step_id) + ".txt";
+      std::fstream fout(swap_nodes_info_filename, fout.out);
+      if(!fout.is_open()) {
+        std::cout << "Failed to open " << swap_nodes_info_filename << "\n";
+      } else {
+        auto write_node_time = [search_for_node_stats, &fout, timestamps_2018_9_1](const string& prefix, const string&name) {
+          auto stats = search_for_node_stats(name);
+          fout << prefix << stats->node_name() << "\t" 
+               << stats->all_start_micros() + stats->all_end_rel_micros() - timestamps_2018_9_1 << "\n";
+        };
+        fout << "This step start at " << start_time << ", end at " << end_time << "\n";
+        fout << "Consumed " << end_time - start_time << "\n\n";
+        for (int pi = 0; pi < swap_out_nodes.size(); ++pi) {
+          write_node_time("O: ", swap_out_nodes[pi]->name());
+          write_node_time("I: ", swap_in_nodes[pi]->name());
+          write_node_time("OT: ", swap_out_triggers[pi]->name());
+          write_node_time("IT: ", swap_in_triggers[pi]->name());
+          write_node_time("TF: ", swap_tensor_from_nodes[pi]->name());
+          write_node_time("TT: ", swap_tensor_to_nodes[pi]->name());
+          auto & inputs = inputs_of_swap_tensor_to_node[pi];
+
+          std::vector<const node_stats_type*> inputs_stats;
+          for (auto node : inputs) {
+            inputs_stats.push_back(search_for_node_stats(node->name()));
+          }
+          std::sort(inputs_stats.begin(), inputs_stats.end(), [](const node_stats_type* n1, const node_stats_type* n2) {
+            return n1->all_start_micros() + n1->all_end_rel_micros() > n2->all_start_micros() + n2->all_end_rel_micros();
+          });
+          if (inputs_stats.size() >= 2) {
+            int64 delay = (inputs_stats[0]->all_start_micros() + inputs_stats[0]->all_end_rel_micros()) - (inputs_stats[1]->all_start_micros() + inputs_stats[1]->all_end_rel_micros());
+            fout << "delay\t" << delay << "\n";
+            if (str_util::StartsWith(inputs_stats[0]->node_name(), "swap_in")) {
+              total_delay += delay;
+            }
+          }
+          for (auto stats : inputs_stats) {
+            fout << stats->node_name() << "\t" << stats->all_start_micros() + stats->all_end_rel_micros() - timestamps_2018_9_1 << "\n";
+          }
+          fout << "\n";
+        }
+        fout << "total delay: " << total_delay << "\n";
+        fout.close();
+      }
+    }
+
+    static bool print_nodes_time = true;
+    if (print_nodes_time) {
+      std::string nodes_time_info_filename = "/home/uniquesc/daihulin/tf_venv/benchmarks/scripts/tf_cnn_benchmarks/log/nodes_time.txt";
+      std::fstream fout2(nodes_time_info_filename, fout2.out);
+      if(!fout2.is_open()) {
+        std::cout << "Failed to open " << nodes_time_info_filename << "\n";
+      } else {
+        for (int dev_i = 0; dev_i < run_metadata->step_stats().dev_stats_size(); ++dev_i) {
+          auto & dev_stats = run_metadata->step_stats().dev_stats(dev_i);
+          for (int i = 0; i < dev_stats.node_stats_size(); ++i) {
+            auto & node_stats = dev_stats.node_stats(i);
+            fout2 << node_stats.node_name() << "\t"
+                  << node_stats.scheduled_micros() << "\t"
+                  << node_stats.all_start_micros() << "\t"
+                  << node_stats.op_start_rel_micros() << "\t"
+                  << node_stats.op_end_rel_micros() << "\t"
+                  << node_stats.all_end_rel_micros() << "\n";
+          }
+        }
+        fout2.close();
+        print_nodes_time = false;
+      }
+    }
+  }
 
   // Receive outputs.
   if (outputs) {
