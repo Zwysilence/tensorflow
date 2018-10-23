@@ -138,14 +138,15 @@ class Allocator {
     }
   }
 
-  virtual void RecordTensorTrace(const string &tensor_name, uint64 _time) {}
+  virtual void RecordTensorAccess(const string &tensor_name, uint64 _time) {}
 
-  virtual void MapTensorToBuffer(const TensorParams &params, TensorBuffer * tensor_buf) {}
+  virtual void RecordSwapContext(const TensorParams &params, TensorBuffer * tensor_buf) {}
 
-  virtual void SaveTensorTrace() {};
+  virtual void SaveTensorTrace() {}
   
-  virtual void SaveMapOfTensorToBuf() {};
+  virtual void SaveMapOfTensorToBuf() {}
 
+  virtual void Notify(const TensorBuffer*) {}
   // Returns true if this allocator tracks the sizes of allocations.
   // RequestedSize and AllocatedSize must be overridden if
   // TracksAllocationSizes is overridden to return true.

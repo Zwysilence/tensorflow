@@ -466,9 +466,13 @@ class Tensor {
   void UnsafeCopyFromInternal(const Tensor&, DataType dtype,
                               const TensorShape&);
 
-  void RecordTensorTrace(const string& tensor_name, uint64 time_);
+  void RecordTensorAccess(const string& tensor_name, uint64 time_);
 
-  void MapTensorToBuffer(const TensorParams &params);
+  void RecordSwapContext(const TensorParams &params);
+
+  void IncrementUsingCount();
+
+  void DecrementUsingCount();
 
   void SetName(const string& name) { name_ = name; }
 
@@ -576,9 +580,16 @@ class TensorBuffer : public core::RefCounted {
   // Whether this TensorBuffer owns the underlying memory.
   virtual bool OwnsMemory() const { return true; }
 
-  virtual void RecordTensorTrace(const string& tensor_name, uint64 time_) {};
+  virtual void RecordTensorAccess(const string& tensor_name, uint64 time_) {};
 
-  virtual void MapTensorToBuffer(const TensorParams &params) {};
+  virtual void RecordSwapContext(const TensorParams &params) {};
+
+  virtual void IncrementUsingCount() {};
+
+  virtual void DecrementUsingCount() {};
+
+  virtual int UsingCount() { return 0; }
+
 };
 
 template <typename T>

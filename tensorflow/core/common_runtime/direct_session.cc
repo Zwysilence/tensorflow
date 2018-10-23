@@ -303,7 +303,6 @@ DirectSession::DirectSession(const SessionOptions& options,
 }
 
 DirectSession::~DirectSession() {
-  LOG(INFO) << "~DirectSession()";
   if (!closed_) Close().IgnoreError();
   for (auto& it : partial_runs_) {
     it.second.reset(nullptr);
@@ -686,7 +685,7 @@ Status DirectSession::Run(const RunOptions& run_options,
                                  executors_and_keys, run_metadata));
 
   int64 end_time = now_in_usec();
-  LOG(INFO) << "Step " << step_id << " consumed " << end_time - start_time << "\n";
+  std::cout << "Step " << step_id << " consumed " << end_time - start_time << "\n";
 
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {

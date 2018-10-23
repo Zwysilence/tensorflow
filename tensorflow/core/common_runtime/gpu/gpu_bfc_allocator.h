@@ -19,10 +19,12 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <memory>
 #include <condition_variable>
 #include <utility>
+#include <mutex>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
@@ -58,10 +60,11 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void SaveTensorTrace();
 
-  //void MapTensorToBuffer(const TensorParams& params);
-  void MapTensorToBuffer(const TensorParams& params, TensorBuffer* tensor_buf);
+  void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf);
 
-  void RecordTensorTrace(const string& tensor_name, const uint64 _time);
+  void RecordTensorAccess(const string& tensor_name, const uint64 _time);
+
+  void Notify(const TensorBuffer* tensor_buf);
 
  private:
 
@@ -69,25 +72,40 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void SwapIn(const string& tensor_name);
 
-  mutable mutex lock_;
+  void LoadSwapPolicy();
 
-  std::unordered_map<std::string, TensorBuffer*> tensor_buffers_;
-
-  std::unordered_map<std::string, Device*> tensor_devices_;
-
-  std::unordered_map<std::string, DeviceContext*> tensor_devcxts_;
-
-  std::unordered_map<std::string, std::vector<uint64> > tensor2times_ GUARDED_BY(lock_);
-
-  std::unordered_map<std::string, bool> swap_nodes_;
-
-  std::unordered_map<std::string, std::pair<void*, int64> > swapped_tensors_;
+  mutable std::mutex lock_;
 
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
 
-  std::unordered_map<std::string, condition_variable_and_mutex> cv_mus_;
+  struct TensorSwapParams {
+    string tensor_name;
+    Device* device;
+    DeviceContext* device_context;
+    TensorBuffer* tensor_buffer;
+    std::pair<void*, int64> cpu_buffer; // set if buffer swapped out
+    condition_variable_and_mutex cv_mu;
+    bool data_ready; // false if buffer swapped out
+  };
 
-  std::unordered_map<std::string, bool> tensor_ready_;
+  struct TriggerInfo {
+    string tensor_name;
+    int access_count;
+    int out_trigger_count;  // 0 if tensor will not be swapped out
+    int in_trigger_count;   // 0 if tensor is not a trigger node of any swap tensor
+    string in_tensor; // in_tensor will be swapped in if the tensor is accessed in_trigger times,
+                      // do nothing if in_trigger equals 0
+    TensorSwapParams* out_params;  // swap params of in_tensor
+    TensorSwapParams* in_params;   // swap params of this tensor
+  };
+
+  std::unordered_map<std::string, TriggerInfo> swap_triggers_;
+
+  std::unordered_map<std::string, TensorSwapParams> tensor_swap_params_map_;
+
+  std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
+
+  std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };

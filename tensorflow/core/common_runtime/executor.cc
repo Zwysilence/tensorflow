@@ -860,6 +860,7 @@ class ExecutorState {
     // Clears the <val> field.
     void ClearVal() {
       if (val_field_is_set) {
+        val->DecrementUsingCount();
         val.Destroy();
         val_field_is_set = false;
         has_value = false;
@@ -1312,23 +1313,46 @@ class ExecutorState {
     return input_frame->GetIteration(input_iter)->input_tensors;
   }
 
-  void TraceTensorInAllocator(const TensorValueVec* inputs);
+  void RecordTensorsAccess(const TensorValueVec* inputs);
 
-  void MapTensorToBuffer(Tensor* tensor, const string& tensor_name, Device* device, DeviceContext* dev_ctx);
+  void RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx);
+
+  void IncrementUsingCountOfTensors(const TensorValueVec* inputs);
 };
 
-void ExecutorState::TraceTensorInAllocator(const TensorValueVec* inputs) {
+void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
+  for(auto &tensor_val : *inputs) {
+    auto tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    tensor->IncrementUsingCount();
+  }
+}
+
+void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs) {
   uint64 time_ = Env::Default()->NowMicros();
   for(auto &tensor_val : *inputs) {
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
-    tensor->RecordTensorTrace(tensor_val.name, time_);
+    tensor->RecordTensorAccess(tensor_val.name, time_);
   }
 }
 
-void ExecutorState::MapTensorToBuffer(Tensor *tensor, const string & tensor_name, Device* device, DeviceContext * dev_ctx) {
-  if (tensor == nullptr) return;
-  tensor->MapTensorToBuffer({tensor_name, device, dev_ctx});
+void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
+  const string& node_name = item.node->name();
+  Device* device = static_cast<Device*>(ctx->device());
+  DeviceContext* dev_ctx = ctx->op_device_context();
+  for (int i = 0; i < outputs->size(); ++i) {
+    Entry* entry = &((*outputs)[i]);
+    if (!entry->has_value) continue;
+
+    string tensor_name = node_name + "_" + std::to_string(i);
+
+    if (!entry->ref) {
+      entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
+    } else {
+      entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
+    }
+  }
 }
 
 ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
@@ -1619,7 +1643,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       bool is_input_dead = false; 
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
-      TraceTensorInAllocator(&inputs);
+      IncrementUsingCountOfTensors(&inputs);
+      //RecordTensorsAccess(&inputs);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
@@ -1656,6 +1681,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
           nodestats::SetOpEnd(stats);
           EntryVector outputs;
           Status s = ProcessOutputs(*state->item, &state->ctx, &outputs, stats);
+          RecordSwapContexts(*state->item, &outputs, &state->ctx);
           nodestats::SetMemory(stats, &state->ctx);
           if (vlog_) {
             VLOG(2) << "Async kernel done: " << state->item->node->id()
@@ -1701,6 +1727,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
+        RecordSwapContexts(item, &outputs, &ctx);
         if (s.ok() && impl_->device_record_tensor_accesses_) {
           // Get the list of all tensors accessed during the execution
           ctx.retrieve_accessed_tensors(&accessed_tensors);
@@ -1844,7 +1871,6 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
   const Node* node = item.node;
   DCHECK_EQ(0, outputs->size());
   outputs->resize(item.num_outputs);
-
   Status s = ctx->status();
   if (!s.ok()) {
     s = AttachDef(s, item.kernel->def());
@@ -1898,10 +1924,6 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
     } else {
       Entry* out = &((*outputs)[i]);
 
-      string tensor_name = node->name() + ":" + std::to_string(i);
-
-      out->tensor_name = tensor_name;
-
       // Set the device context of the output entry.
       out->device_context = device_context;
 
@@ -1917,7 +1939,6 @@ Status ExecutorState::ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
         dtype = val->dtype();
       }
       if (dtype == item.output_type(i)) {
-        MapTensorToBuffer(val.tensor, tensor_name, static_cast<Device*>(ctx->device()), ctx->op_device_context());
         if (stats && val.tensor->IsInitialized()) {
           nodestats::SetOutput(stats, i, val.tensor);
         }
