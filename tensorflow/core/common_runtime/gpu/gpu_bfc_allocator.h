@@ -95,6 +95,7 @@ class GPUBFCAllocator : public BFCAllocator {
     int in_trigger_count;   // 0 if tensor is not a trigger node of any swap tensor
     string in_tensor; // in_tensor will be swapped in if the tensor is accessed in_trigger times,
                       // do nothing if in_trigger equals 0
+    string in_trigger;
     TensorSwapParams* out_params;  // swap params of in_tensor
     TensorSwapParams* in_params;   // swap params of this tensor
   };

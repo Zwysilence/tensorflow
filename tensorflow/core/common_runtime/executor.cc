@@ -864,6 +864,8 @@ class ExecutorState {
         val.Destroy();
         val_field_is_set = false;
         has_value = false;
+      } else if (ref) {
+        ref->DecrementUsingCount();
       }
     }
 
@@ -1346,8 +1348,9 @@ void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* output
     if (!entry->has_value) continue;
 
     string tensor_name = node_name + "_" + std::to_string(i);
+    entry->tensor_name = tensor_name;
 
-    if (!entry->ref) {
+    if (entry->ref) {
       entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
     } else {
       entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
@@ -1644,7 +1647,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
       IncrementUsingCountOfTensors(&inputs);
-      //RecordTensorsAccess(&inputs);
+      RecordTensorsAccess(&inputs);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;

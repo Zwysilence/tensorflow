@@ -74,7 +74,11 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
     auto &cv_mu = swap_params.cv_mu;
     std::unique_lock<std::mutex> lk(*(cv_mu.second));
     bool* ready = &(swap_params.data_ready);
+
+    int cnt = swap_triggers_[swap_triggers_[tensor_name].in_trigger].access_count;
+    printf("Wait\t%s\t%d\n", tensor_name.c_str(), cnt);
     cv_mu.first->wait(lk, [ready]() { return *ready; });
+    printf("Ready\t%s\n", tensor_name.c_str());
     lk.unlock();
   }
   tensor_access_times_[tensor_name].push_back(_time);
@@ -127,6 +131,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_out_trigger.tensor_name = out_tensor_name;
     swap_out_trigger.out_trigger_count = out_trigger_count;
     swap_out_trigger.out_params = &swap_params;
+    swap_out_trigger.in_trigger = in_trigger_name;
 
     auto& swap_in_trigger = swap_triggers_[in_trigger_name];
     swap_in_trigger.tensor_name = in_trigger_name;
@@ -159,6 +164,7 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
 
 void GPUBFCAllocator::SwapOut(const string& tensor_name) {
   CHECK(tensor_swap_params_map_.count(tensor_name));
+  printf("Out:\t%s\n", tensor_name.c_str());
   auto& swap_params = tensor_swap_params_map_[tensor_name];
   Device* device = swap_params.device;
   DeviceContext* device_context = swap_params.device_context;
@@ -218,6 +224,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name) {
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   CHECK(tensor_swap_params_map_.count(tensor_name));
+  printf("In:\t%s\n", tensor_name.c_str());
   auto& swap_params = tensor_swap_params_map_[tensor_name];
   auto& cpu_buffer = swap_params.cpu_buffer;
   void* src_ptr = cpu_buffer.first;
