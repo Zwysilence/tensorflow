@@ -766,6 +766,11 @@ struct SwapInfo {
   Costs::NanoSeconds time_to_swap = 0;
 };
 
+struct vDNNSwapInfo {
+  std::vector<int> inputs_to_swap;
+  NodeDef* in_trigger_node = nullptr;
+}
+
 static const NodeDef* FindSwapInTrigger(
     const NodeDef* node, const SwapInfo& swap_info,
     const std::unordered_map<string, const NodeDef*>& name_map,
@@ -1100,6 +1105,112 @@ static bool IdentifySwappingCandidates(
   return updated_graph;
 }
 
+bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
+                      std::unordered_set<string>* skip_list) {
+  std::unordered_map<NodeDef*, vDNNSwapInfo> nodes_to_swap;
+  if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
+      optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
+      optimization_level == RewriterConfig::HEURISTICS) {
+    // Use heuristics to figure out what needs to be swapped;
+    InitSwappingPass(cluster, item, &nodes_to_swap);
+  }
+
+  std::unordered_map<string, const NodeDef*> name_map;
+  for (const auto& node : item->graph.node()) {
+    name_map[node.name()] = &node;
+  }
+
+  for (auto& swap : nodes_to_swap) {
+    NodeDef* node = swap.first;
+    const vDNNSwapInfo& swap_info = swap.second;
+
+    for (int input_id : swap_info.inputs_to_swap) {
+      std::pair<NodeDef*, NodeDef*> swap_nodes;
+      if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
+                .ok()) {
+        continue;
+      }
+      *swap_nodes.first->add_input() = node->input(input_id);
+      *node->mutable_input(input_id) = swap_nodes.second->name();
+
+      // Add the control dependency to trigger node to be swapped in
+      swap_nodes.second->add_input(string::StrCat("^", in_trigger_node->name()));
+    }
+  }
+
+}
+
+static bool InitSwappingPass(
+  Cluster* cluster, GrapplerItem* item,
+  std::unordered_map<NodeDef*, vDNNSwapInfo>* nodes_to_swap) {
+  // file to initate swapping decision
+  const std::string swappingDec = "/home/uniquesc/v-xuapen";
+  std::fstream fin(swappingDec, fin.in);
+  if (!fin.is_open()) {
+    std::cout << "Fail to open file " << swappingDec << std::endl;
+    return false;
+  }
+
+  const std::unordered_map<string, DeviceProperties>& devices =
+    cluster->GetDevices();
+
+  for (const auto& device : devices) {
+    const string& name = device.first;
+    const DeviceProperties& prop = device.second;
+    if (prop.type() != "GPU") {
+      continue;
+    }
+
+    GraphView graph(&item->graph);
+
+    string node_name, in_trigger_node_name;
+    int input_id;
+    string input_tensor_name;
+
+    while(fin >> node_name >> input_id >> input_tensor_name >> in_trigger_node_name) {
+      NodeDef* node = graph.GetNode(node_name);
+      if (!node) {
+        std::cout << "Error swap node name " << node_name << std::endl;
+        return false;
+      }
+
+      CHECK_NE(-1, input_id);
+      int fanout_id;
+      string fanin_node_name = ParseNodeName(node->input(input_id), &fanout_id);
+
+      auto fanin_node = graph.GetNode(fanin_node_name);
+      if (!fanin_node) {
+        std::cout << "Error input node name " << fanin_node_name << std::endl;
+        return false;
+      }
+
+      if (input_tensor_name.compare(fanin_node_name+string(fanout_id)) != 0) {
+        std::cout << "input_tensor_name not match " << input_tensor_name << std::endl;
+        return false;
+      }
+
+      NodeDef* in_trigger_node = graph.GetNode(in_trigger_node_name);
+      if (!in_trigger_node) {
+        std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
+        return false;
+      }
+
+      auto it = nodes_to_swap->find(node);
+      if (it != nodes_to_swap->end()) {
+        vDNNSwapInfo& swap_info = nodes_to_swap[node];
+        swap_info.inputs_to_swap.push_back(input_id);
+        if (swap_info.in_trigger_node != in_trigger_node) {
+          std::cout << "in trigger node not match " << in_trigger_node_name << std::endl;
+        }
+      }
+      else {
+        *(nodes_to_swap)[node].inputs_to_swap.push_back(input_id);
+        *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
+      }
+    }
+  }
+}
+
 bool SwappingPass(RewriterConfig::MemOptType optimization_level,
                   Cluster* cluster, GrapplerItem* item,
                   std::unordered_set<string>* skip_list) {
@@ -1161,7 +1272,7 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   GraphView view(&item->graph);
 
   bool updated_graph = false;
-
+ 
   for (auto& swap : nodes_to_swap) {
     NodeDef* node = swap.first;
     const SwapInfo& swap_info = swap.second;
