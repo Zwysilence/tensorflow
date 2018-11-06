@@ -64,6 +64,8 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void RecordTensorAccess(const string& tensor_name, const uint64 _time);
 
+  void CleanTensorsAccess();
+
   void Notify(const TensorBuffer* tensor_buf);
 
  private:
@@ -76,6 +78,8 @@ class GPUBFCAllocator : public BFCAllocator {
 
   mutable std::mutex lock_;
 
+  std::mutex mu_;
+
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
 
   struct TensorSwapParams {
@@ -85,14 +89,16 @@ class GPUBFCAllocator : public BFCAllocator {
     TensorBuffer* tensor_buffer;
     std::pair<void*, int64> cpu_buffer; // set if buffer swapped out
     condition_variable_and_mutex cv_mu;
-    bool data_ready; // false if buffer swapped out
+    int data_ready; // false if buffer swapped out
   };
 
   struct TriggerInfo {
     string tensor_name;
-    int access_count;
+    //int access_count;
+    std::atomic_int_fast32_t access_count;
     int out_trigger_count;  // 0 if tensor will not be swapped out
     int in_trigger_count;   // 0 if tensor is not a trigger node of any swap tensor
+    int total_access_count;
     string in_tensor; // in_tensor will be swapped in if the tensor is accessed in_trigger times,
                       // do nothing if in_trigger equals 0
     string in_trigger;

@@ -436,6 +436,7 @@ Status DirectSession::RunInternal(int64 step_id, const RunOptions& run_options,
                                   CallFrameInterface* call_frame,
                                   ExecutorsAndKeys* executors_and_keys,
                                   RunMetadata* run_metadata) {
+  printf("RunInternal\n");
   const int64 executor_step_count = executors_and_keys->step_count.fetch_add(1);
 
   std::unique_ptr<DebuggerStateInterface> debugger_state;

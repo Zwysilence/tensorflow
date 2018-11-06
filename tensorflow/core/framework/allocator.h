@@ -142,6 +142,8 @@ class Allocator {
 
   virtual void RecordSwapContext(const TensorParams &params, TensorBuffer * tensor_buf) {}
 
+  virtual void CleanTensorsAccess() {}
+
   virtual void SaveTensorTrace() {}
   
   virtual void SaveMapOfTensorToBuf() {}
