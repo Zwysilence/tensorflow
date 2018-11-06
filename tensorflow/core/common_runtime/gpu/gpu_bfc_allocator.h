@@ -94,8 +94,7 @@ class GPUBFCAllocator : public BFCAllocator {
 
   struct TriggerInfo {
     string tensor_name;
-    //int access_count;
-    std::atomic_int_fast32_t access_count;
+    int access_count;
     int out_trigger_count;  // 0 if tensor will not be swapped out
     int in_trigger_count;   // 0 if tensor is not a trigger node of any swap tensor
     int total_access_count;

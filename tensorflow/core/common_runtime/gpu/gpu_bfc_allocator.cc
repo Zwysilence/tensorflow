@@ -90,23 +90,24 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
   }
 
   auto& swap_trigger = swap_triggers_[tensor_name];
-  //int cnt;
-  //{
-  //  //std::lock_guard<std::mutex> l(mu_);
-  //  cnt = swap_trigger.access_count + 1;
-  //  if (swap_trigger.access_count == swap_trigger.total_access_count) {
-  //    swap_trigger.access_count = 0;
-  //  }
-  //}
   int cnt;
   {
     std::lock_guard<std::mutex> l(mu_);
-    cnt = swap_trigger.access_count.fetch_add(1);
-    if (swap_trigger.access_count.load() == swap_trigger.total_access_count) {
-      swap_trigger.access_count.store(0);
+    swap_trigger.access_count++;
+    cnt = swap_trigger.access_count;
+    if (swap_trigger.access_count == swap_trigger.total_access_count) {
+      swap_trigger.access_count = 0;
     }
   }
-  cnt += 1;
+  //int cnt;
+  //{
+  //  std::lock_guard<std::mutex> l(mu_);
+  //  cnt = swap_trigger.access_count.fetch_add(1);
+  //  if (swap_trigger.access_count.load() == swap_trigger.total_access_count) {
+  //    swap_trigger.access_count.store(0);
+  //  }
+  //}
+  //cnt += 1;
   if (swap_trigger.out_trigger_count != 0 && cnt == swap_trigger.out_trigger_count) {
     SwapOut(tensor_name);
   }
@@ -118,8 +119,8 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
 
 void GPUBFCAllocator::CleanTensorsAccess() {
   for (auto& trigger : swap_triggers_) {
-    trigger.second.access_count.store(0);
-    //trigger.second.access_count = 0;
+    //trigger.second.access_count.store(0);
+    trigger.second.access_count = 0;
   }
 
   for (auto& swap_params : tensor_swap_params_map_) {
@@ -163,8 +164,8 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_out_trigger.out_trigger_count = out_trigger_count;
     swap_out_trigger.out_params = &swap_params;
     swap_out_trigger.in_trigger = in_trigger_name;
-    swap_out_trigger.access_count.store(0);
-    //swap_out_trigger.access_count = 0;
+    //swap_out_trigger.access_count.store(0);
+    swap_out_trigger.access_count = 0;
     swap_out_trigger.total_access_count = out_tensor_total_access;
 
     auto& swap_in_trigger = swap_triggers_[in_trigger_name];
@@ -172,8 +173,8 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_in_trigger.in_trigger_count = in_trigger_count;
     swap_in_trigger.in_tensor = out_tensor_name;
     swap_in_trigger.in_params = &swap_params;
-    swap_in_trigger.access_count.store(0);
-    //swap_in_trigger.access_count = 0;
+    //swap_in_trigger.access_count.store(0);
+    swap_in_trigger.access_count = 0;
     swap_in_trigger.total_access_count = in_trigger_total_access;
   }
 }
