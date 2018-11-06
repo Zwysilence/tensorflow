@@ -692,6 +692,59 @@ bool SchedulingPass(Cluster* cluster, GrapplerItem* item) {
   return updated_graph;
 }
 
+Status vDNNBuildSwapPair(NodeDef* node, int output_to_swap,
+                         const std::unordered_map<string, const NodeDef*>& name_map,
+                         GraphDef* graph,
+                         std::pair<NodeDef*, NodeDef*>* swap_pair) {
+  const OpDef* op_def;
+  TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef(node->op(), &op_def));
+  DataType output_type;
+  TF_RETURN_IF_ERROR(
+      OutputTypeForNode(*node, *op_def, output_to_swap , &output_type));
+  if (IsRefType(output_type)) {
+    return errors::InvalidArgument("Can't swap output ", input_to_swap,
+                                   " of node ", node->name(),
+                                   " since it expects a reference");
+  }
+
+  string tensor_to_swap = string::StrCat(node->name(), "_", output_to_swap);
+  string swap_out_name = string::StrCat("swap_out_", tensor_to_swap);
+  string swap_in_name = string::StrCat("swap_in_", tensor_to_swap);
+
+  if (name_map.find(swap_out_name) != name_map.end() ||
+      name_map.find(swap_in_name) != name_map.end()) {
+    return errors::InvalidArgument("Output ", output_to_swap, " of node ",
+                                   node->name(), " is already swapped");
+  }
+
+  // Force the tensor to be copied to cpu.
+  NodeDef* swap_out_node = graph->add_node();
+  swap_out_node->set_name(swap_out_name);
+  swap_out_node->set_op("_CopyFromGpuToHost");
+
+  // Force the tensor to be restored to the device.
+  NodeDef* swap_in_node = graph->add_node();
+  swap_in_node->set_name(swap_in_name);
+  swap_in_node->set_op("_CopyFromHostToGpu");
+  *swap_in_node->add_input() = swap_out_node->name();
+
+  swap_out_node->set_device(node->device());
+  swap_in_node->set_device(node->device());
+  string coloc_group = string::StrCat("loc@", tensor_to_swap);
+  (*swap_out_node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
+  (*swap_in_node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
+  (*node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
+
+  (*swap_in_node->mutable_attr())["T"].set_type(input_type);
+  (*swap_out_node->mutable_attr())["T"].set_type(input_type);
+  *swap_pair = std::make_pair(swap_out_node, swap_in_node);
+
+  name_map[swap_out_name] = swap_out_node;
+  name_map[swap_in_name] = swap_in_node;
+
+  return Status::OK();
+}
+
 Status BuildSwapPair(NodeDef* node, int input_to_swap,
                      const std::unordered_map<string, const NodeDef*>& name_map,
                      GraphDef* graph,
@@ -706,6 +759,11 @@ Status BuildSwapPair(NodeDef* node, int input_to_swap,
                                    " of node ", node->name(),
                                    " since it expects a reference");
   }
+
+  // TODO: check the node->input(input_to_swap) whether is been swapped out, not
+  // the node->name()+"_"+input_to_swap, it will cause same tensor been swapped out
+  // multiple times
+  // TODO: insert the swap node to the name_map?
 
   string tensor_to_swap = strings::StrCat(node->name(), "_", input_to_swap);
   string swap_out_name = strings::StrCat("swap_out_", tensor_to_swap);
@@ -767,7 +825,9 @@ struct SwapInfo {
 };
 
 struct vDNNSwapInfo {
-  std::vector<int> inputs_to_swap;
+  // std::vector<int> inputs_to_swap;
+  // int output_to_swap;
+  std::vector<std::pair<NodeDef*, int>> uses_left;
   NodeDef* in_trigger_node = nullptr;
 }
 
@@ -1107,7 +1167,7 @@ static bool IdentifySwappingCandidates(
 
 bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
                       std::unordered_set<string>* skip_list) {
-  std::unordered_map<NodeDef*, vDNNSwapInfo> nodes_to_swap;
+  std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap;
   if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
       optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
       optimization_level == RewriterConfig::HEURISTICS) {
@@ -1115,34 +1175,65 @@ bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
     InitSwappingPass(cluster, item, &nodes_to_swap);
   }
 
+  if (nodes_to_swap.empty()) {
+    // Nothing to do.
+    return false;
+  }
+
   std::unordered_map<string, const NodeDef*> name_map;
   for (const auto& node : item->graph.node()) {
     name_map[node.name()] = &node;
   }
 
+
   for (auto& swap : nodes_to_swap) {
-    NodeDef* node = swap.first;
+    NodeDef* node = swap.first.first;
+    int output_id = swap.first.second;
+
+    std::pair<NodeDef*, NodeDef*> swap_nodes;
+    if (!vDNNBuildSwapPair(node, output_id, name_map, &item->graph, &swap_nodes)
+          .ok()) {
+      continue;
+    }
+
     const vDNNSwapInfo& swap_info = swap.second;
 
-    for (int input_id : swap_info.inputs_to_swap) {
-      std::pair<NodeDef*, NodeDef*> swap_nodes;
-      if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
-                .ok()) {
-        continue;
-      }
-      *swap_nodes.first->add_input() = node->input(input_id);
-      *node->mutable_input(input_id) = swap_nodes.second->name();
-
-      // Add the control dependency to trigger node to be swapped in
-      swap_nodes.second->add_input(string::StrCat("^", in_trigger_node->name()));
+    // TODO: node has no function like node->output(index), need to get this
+    // input from another node
+    // DONE: node->input(): "node:src_output"
+    *swap_nodes.first->add_input() = string::StrCat(node->name(), ":", output_id);
+    std::pair<NodeDef*, int> it;
+    for (it: swap_info.uses_left) {
+      *it.first->mutable_input(it.second) = swap_nodes.second->name();
     }
+
+    NodeDef* in_trigger = swap_info.in_trigger_node;
+    swap_nodes.second->add_input(string::StrCat("^", in_trigger->name()));
   }
+
+  // for (auto& swap : nodes_to_swap) {
+  //   NodeDef* node = swap.first;
+  //   const vDNNSwapInfo& swap_info = swap.second;
+
+  //   for (int input_id : swap_info.inputs_to_swap) {
+  //     std::pair<NodeDef*, NodeDef*> swap_nodes;
+  //     if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
+  //               .ok()) {
+  //       continue;
+  //     }
+  //     *swap_nodes.first->add_input() = node->input(input_id);
+  //     *node->mutable_input(input_id) = swap_nodes.second->name();
+
+  //     // Add the control dependency to trigger node to be swapped in
+  //     swap_nodes.second->add_input(string::StrCat("^", in_trigger_node->name()));
+  //   }
+  // }
 
 }
 
 static bool InitSwappingPass(
   Cluster* cluster, GrapplerItem* item,
-  std::unordered_map<NodeDef*, vDNNSwapInfo>* nodes_to_swap) {
+  std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap) {
   // file to initate swapping decision
   const std::string swappingDec = "/home/uniquesc/v-xuapen";
   std::fstream fin(swappingDec, fin.in);
@@ -1151,64 +1242,111 @@ static bool InitSwappingPass(
     return false;
   }
 
-  const std::unordered_map<string, DeviceProperties>& devices =
-    cluster->GetDevices();
+  GraphView graph(&item->graph);
 
-  for (const auto& device : devices) {
-    const string& name = device.first;
-    const DeviceProperties& prop = device.second;
-    if (prop.type() != "GPU") {
-      continue;
+  string node_name, in_trigger_node_name;
+  int output_id, num_uses_left;
+
+  std::pair<NodeDef*, int> swapped_tensor;
+
+  while (fin >> node_name >> output_id >> num_uses_left) {
+    NodeDef* node = graph.GetNode(node_name);
+    if (!node) {
+      std::cout << "Error swap node name " << node_name << std::endl;
+      return false;
     }
 
-    GraphView graph(&item->graph);
+    CHECK_LE(0, output_id);
+    // *(nodes_to_swap)[node].output_to_swap = output_id;
+    swapped_tensor = std::make_pair(node, output_id);
 
-    string node_name, in_trigger_node_name;
+    // Check if swapped this tensor out
+    if (nodes_to_swap->find(swapped_tensor) != nodes_to_swap->end()) {
+      std::cout << "Already swap this tensor out: " << node_name << ":" << output_id << std::endl;
+      return false;
+    }
+
+    string tmp_node_name;
     int input_id;
-    string input_tensor_name;
-
-    while(fin >> node_name >> input_id >> input_tensor_name >> in_trigger_node_name) {
-      NodeDef* node = graph.GetNode(node_name);
-      if (!node) {
-        std::cout << "Error swap node name " << node_name << std::endl;
+    for (int i = 0; i != num_uses_left; i++) {
+      fin >> tmp_node_name >> input_id;
+      NodeDef* fanout_to_swap_node = graph.GetNode(tmp_node_name)
+      if (!fanout_to_swap_node) {
+        std::cout << "Error fanout node name " << tmp_node_name << std::endl;
         return false;
       }
 
-      CHECK_NE(-1, input_id);
-      int fanout_id;
-      string fanin_node_name = ParseNodeName(node->input(input_id), &fanout_id);
-
-      auto fanin_node = graph.GetNode(fanin_node_name);
-      if (!fanin_node) {
-        std::cout << "Error input node name " << fanin_node_name << std::endl;
-        return false;
-      }
-
-      if (input_tensor_name.compare(fanin_node_name+string(fanout_id)) != 0) {
-        std::cout << "input_tensor_name not match " << input_tensor_name << std::endl;
-        return false;
-      }
-
-      NodeDef* in_trigger_node = graph.GetNode(in_trigger_node_name);
-      if (!in_trigger_node) {
-        std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
-        return false;
-      }
-
-      auto it = nodes_to_swap->find(node);
-      if (it != nodes_to_swap->end()) {
-        vDNNSwapInfo& swap_info = nodes_to_swap[node];
-        swap_info.inputs_to_swap.push_back(input_id);
-        if (swap_info.in_trigger_node != in_trigger_node) {
-          std::cout << "in trigger node not match " << in_trigger_node_name << std::endl;
-        }
-      }
-      else {
-        *(nodes_to_swap)[node].inputs_to_swap.push_back(input_id);
-        *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
-      }
+      *(nodes_to_swap)[node].uses_left.push_back(
+                             std::make_pair(fanout_to_swap_node, input_id));
     }
+
+    fin >> in_trigger_node_name;
+    NodeDef* in_trigger_node = graph.GetNode(in_trigger_node_name);
+    if (!in_trigger_node) {
+      std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
+      return false;
+    }
+    *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
   }
+
+  // const std::unordered_map<string, DeviceProperties>& devices =
+  //   cluster->GetDevices();
+
+  // for (const auto& device : devices) {
+  //   const string& name = device.first;
+  //   const DeviceProperties& prop = device.second;
+  //   if (prop.type() != "GPU") {
+  //     continue;
+  //   }
+
+  //   GraphView graph(&item->graph);
+
+  //   string node_name, in_trigger_node_name;
+  //   int input_id;
+  //   string input_tensor_name;
+
+  //   while(fin >> node_name >> input_id >> input_tensor_name >> in_trigger_node_name) {
+  //     NodeDef* node = graph.GetNode(node_name);
+  //     if (!node) {
+  //       std::cout << "Error swap node name " << node_name << std::endl;
+  //       return false;
+  //     }
+
+  //     CHECK_NE(-1, input_id);
+  //     int fanout_id;
+  //     string fanin_node_name = ParseNodeName(node->input(input_id), &fanout_id);
+
+  //     auto fanin_node = graph.GetNode(fanin_node_name);
+  //     if (!fanin_node) {
+  //       std::cout << "Error input node name " << fanin_node_name << std::endl;
+  //       return false;
+  //     }
+
+  //     if (input_tensor_name.compare(fanin_node_name+string(fanout_id)) != 0) {
+  //       std::cout << "input_tensor_name not match " << input_tensor_name << std::endl;
+  //       return false;
+  //     }
+
+  //     NodeDef* in_trigger_node = graph.GetNode(in_trigger_node_name);
+  //     if (!in_trigger_node) {
+  //       std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
+  //       return false;
+  //     }
+
+  //     auto it = nodes_to_swap->find(node);
+  //     if (it != nodes_to_swap->end()) {
+  //       vDNNSwapInfo& swap_info = nodes_to_swap[node];
+  //       swap_info.inputs_to_swap.push_back(input_id);
+  //       if (swap_info.in_trigger_node != in_trigger_node) {
+  //         std::cout << "in trigger node not match " << in_trigger_node_name << std::endl;
+  //       }
+  //     }
+  //     else {
+  //       *(nodes_to_swap)[node].inputs_to_swap.push_back(input_id);
+  //       *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
+  //     }
+  //   }
+  // }
 }
 
 bool SwappingPass(RewriterConfig::MemOptType optimization_level,
@@ -1272,7 +1410,7 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   GraphView view(&item->graph);
 
   bool updated_graph = false;
- 
+
   for (auto& swap : nodes_to_swap) {
     NodeDef* node = swap.first;
     const SwapInfo& swap_info = swap.second;
@@ -1359,7 +1497,7 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   else
     printf("MemoryOptimizerError: unrecognized optimizer!\n");
     // VLOG(1) << "MemoryOptimizerError: unrecognized optimizer!";
-  
+
   RecomputationRewritingPass(optimization_level_,
                              recomputation_targets_name_scope_, optimized_graph,
                              item);
