@@ -1165,13 +1165,13 @@ static bool IdentifySwappingCandidates(
   return updated_graph;
 }
 
-bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
-                      std::unordered_set<string>* skip_list) {
+bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level, 
+                      Cluster* cluster, GrapplerItem* item) {
   std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap;
   if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
       optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
       optimization_level == RewriterConfig::HEURISTICS) {
-    // Use heuristics to figure out what needs to be swapped;
+    // Init swapping decision from file
     InitSwappingPass(cluster, item, &nodes_to_swap);
   }
 
@@ -1196,6 +1196,8 @@ bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
       continue;
     }
 
+    VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
+
     const vDNNSwapInfo& swap_info = swap.second;
 
     // TODO: node has no function like node->output(index), need to get this
@@ -1209,6 +1211,8 @@ bool SwappingPassvDNN(Cluster* cluster, GrapplerItem* item,
 
     NodeDef* in_trigger = swap_info.in_trigger_node;
     swap_nodes.second->add_input(string::StrCat("^", in_trigger->name()));
+
+    VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
   }
 
   // for (auto& swap : nodes_to_swap) {
@@ -1235,7 +1239,7 @@ static bool InitSwappingPass(
   Cluster* cluster, GrapplerItem* item,
   std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap) {
   // file to initate swapping decision
-  const std::string swappingDec = "/home/uniquesc/v-xuapen";
+  const std::string swappingDec = "/home/uniquesc/v-xuapen/vDNN_swapping/swap_info.log";
   std::fstream fin(swappingDec, fin.in);
   if (!fin.is_open()) {
     std::cout << "Fail to open file " << swappingDec << std::endl;
@@ -1521,8 +1525,10 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
          optimization_level_ == RewriterConfig::HEURISTICS ||
          optimization_level_ == RewriterConfig::MANUAL) &&
         cluster != nullptr) {
-      updated_graph |= SwappingPass(optimization_level_, cluster,
-                                    &optimized_item, &skip_list);
+      // updated_graph |= SwappingPass(optimization_level_, cluster,
+      //                               &optimized_item, &skip_list);
+      updated_graph |= SwappingPassvDNN(optimization_level_, cluster,
+                                    &optimized_item);
     }
   }
 
