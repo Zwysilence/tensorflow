@@ -21,6 +21,8 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include <boost/functional/hash.hpp>
+
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op.h"
@@ -702,14 +704,14 @@ Status vDNNBuildSwapPair(NodeDef* node, int output_to_swap,
   TF_RETURN_IF_ERROR(
       OutputTypeForNode(*node, *op_def, output_to_swap , &output_type));
   if (IsRefType(output_type)) {
-    return errors::InvalidArgument("Can't swap output ", input_to_swap,
+    return errors::InvalidArgument("Can't swap output ", output_to_swap,
                                    " of node ", node->name(),
                                    " since it expects a reference");
   }
 
-  string tensor_to_swap = string::StrCat(node->name(), "_", output_to_swap);
-  string swap_out_name = string::StrCat("swap_out_", tensor_to_swap);
-  string swap_in_name = string::StrCat("swap_in_", tensor_to_swap);
+  string tensor_to_swap = strings::StrCat(node->name(), "_", output_to_swap);
+  string swap_out_name = strings::StrCat("swap_out_", tensor_to_swap);
+  string swap_in_name = strings::StrCat("swap_in_", tensor_to_swap);
 
   if (name_map.find(swap_out_name) != name_map.end() ||
       name_map.find(swap_in_name) != name_map.end()) {
@@ -730,17 +732,17 @@ Status vDNNBuildSwapPair(NodeDef* node, int output_to_swap,
 
   swap_out_node->set_device(node->device());
   swap_in_node->set_device(node->device());
-  string coloc_group = string::StrCat("loc@", tensor_to_swap);
+  string coloc_group = strings::StrCat("loc@", tensor_to_swap);
   (*swap_out_node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
   (*swap_in_node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
   (*node->mutable_attr())["_class"].mutable_list()->add_s(coloc_group);
 
-  (*swap_in_node->mutable_attr())["T"].set_type(input_type);
-  (*swap_out_node->mutable_attr())["T"].set_type(input_type);
+  (*swap_in_node->mutable_attr())["T"].set_type(output_type);
+  (*swap_out_node->mutable_attr())["T"].set_type(output_type);
   *swap_pair = std::make_pair(swap_out_node, swap_in_node);
 
-  name_map[swap_out_name] = swap_out_node;
-  name_map[swap_in_name] = swap_in_node;
+  // name_map[swap_out_name] = swap_out_node;
+  // name_map[swap_in_name] = swap_in_node;
 
   return Status::OK();
 }
@@ -829,7 +831,7 @@ struct vDNNSwapInfo {
   // int output_to_swap;
   std::vector<std::pair<NodeDef*, int>> uses_left;
   NodeDef* in_trigger_node = nullptr;
-}
+};
 
 static const NodeDef* FindSwapInTrigger(
     const NodeDef* node, const SwapInfo& swap_info,
@@ -1165,76 +1167,6 @@ static bool IdentifySwappingCandidates(
   return updated_graph;
 }
 
-bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level, 
-                      Cluster* cluster, GrapplerItem* item) {
-  std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap;
-  if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
-      optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
-      optimization_level == RewriterConfig::HEURISTICS) {
-    // Init swapping decision from file
-    InitSwappingPass(cluster, item, &nodes_to_swap);
-  }
-
-  if (nodes_to_swap.empty()) {
-    // Nothing to do.
-    return false;
-  }
-
-  std::unordered_map<string, const NodeDef*> name_map;
-  for (const auto& node : item->graph.node()) {
-    name_map[node.name()] = &node;
-  }
-
-
-  for (auto& swap : nodes_to_swap) {
-    NodeDef* node = swap.first.first;
-    int output_id = swap.first.second;
-
-    std::pair<NodeDef*, NodeDef*> swap_nodes;
-    if (!vDNNBuildSwapPair(node, output_id, name_map, &item->graph, &swap_nodes)
-          .ok()) {
-      continue;
-    }
-
-    VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
-
-    const vDNNSwapInfo& swap_info = swap.second;
-
-    // TODO: node has no function like node->output(index), need to get this
-    // input from another node
-    // DONE: node->input(): "node:src_output"
-    *swap_nodes.first->add_input() = string::StrCat(node->name(), ":", output_id);
-    std::pair<NodeDef*, int> it;
-    for (it: swap_info.uses_left) {
-      *it.first->mutable_input(it.second) = swap_nodes.second->name();
-    }
-
-    NodeDef* in_trigger = swap_info.in_trigger_node;
-    swap_nodes.second->add_input(string::StrCat("^", in_trigger->name()));
-
-    VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
-  }
-
-  // for (auto& swap : nodes_to_swap) {
-  //   NodeDef* node = swap.first;
-  //   const vDNNSwapInfo& swap_info = swap.second;
-
-  //   for (int input_id : swap_info.inputs_to_swap) {
-  //     std::pair<NodeDef*, NodeDef*> swap_nodes;
-  //     if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
-  //               .ok()) {
-  //       continue;
-  //     }
-  //     *swap_nodes.first->add_input() = node->input(input_id);
-  //     *node->mutable_input(input_id) = swap_nodes.second->name();
-
-  //     // Add the control dependency to trigger node to be swapped in
-  //     swap_nodes.second->add_input(string::StrCat("^", in_trigger_node->name()));
-  //   }
-  // }
-
-}
-
 static bool InitSwappingPass(
   Cluster* cluster, GrapplerItem* item,
   std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap) {
@@ -1292,6 +1224,81 @@ static bool InitSwappingPass(
     }
     *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
   }
+}
+
+
+bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
+                      Cluster* cluster, GrapplerItem* item) {
+  typedef std::pair<NodeDef*, int> pair1;
+  std::unordered_map<pair1, vDNNSwapInfo, boost::hash<pair1>> nodes_to_swap;
+  if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
+      optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
+      optimization_level == RewriterConfig::HEURISTICS) {
+    // Init swapping decision from file
+    InitSwappingPass(cluster, item, &nodes_to_swap);
+  }
+
+  if (nodes_to_swap.empty()) {
+    // Nothing to do.
+    return false;
+  }
+
+  std::unordered_map<string, const NodeDef*> name_map;
+  for (const auto& node : item->graph.node()) {
+    name_map[node.name()] = &node;
+  }
+
+
+  for (auto& swap : nodes_to_swap) {
+    NodeDef* node = swap.first.first;
+    int output_id = swap.first.second;
+
+    std::pair<NodeDef*, NodeDef*> swap_nodes;
+    if (!vDNNBuildSwapPair(node, output_id, name_map, &item->graph, &swap_nodes)
+          .ok()) {
+      continue;
+    }
+
+    VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
+
+    const vDNNSwapInfo& swap_info = swap.second;
+
+    // TODO: node has no function like node->output(index), need to get this
+    // input from another node
+    // DONE: node->input(): "node:src_output"
+    *swap_nodes.first->add_input() = strings::StrCat(node->name(), ":", output_id);
+    std::pair<NodeDef*, int> it;
+    for (it : swap_info.uses_left) {
+      *it.first->mutable_input(it.second) = swap_nodes.second->name();
+    }
+
+    NodeDef* in_trigger = swap_info.in_trigger_node;
+    swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
+
+    VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
+  }
+}
+
+  // for (auto& swap : nodes_to_swap) {
+  //   NodeDef* node = swap.first;
+  //   const vDNNSwapInfo& swap_info = swap.second;
+
+  //   for (int input_id : swap_info.inputs_to_swap) {
+  //     std::pair<NodeDef*, NodeDef*> swap_nodes;
+  //     if (!BuildSwapPair(node, input_id, name_map, &item->graph, &swap_nodes)
+  //               .ok()) {
+  //       continue;
+  //     }
+  //     *swap_nodes.first->add_input() = node->input(input_id);
+  //     *node->mutable_input(input_id) = swap_nodes.second->name();
+
+  //     // Add the control dependency to trigger node to be swapped in
+  //     swap_nodes.second->add_input(string::StrCat("^", in_trigger_node->name()));
+  //   }
+  // }
+
+
+
 
   // const std::unordered_map<string, DeviceProperties>& devices =
   //   cluster->GetDevices();
@@ -1351,7 +1358,7 @@ static bool InitSwappingPass(
   //     }
   //   }
   // }
-}
+
 
 bool SwappingPass(RewriterConfig::MemOptType optimization_level,
                   Cluster* cluster, GrapplerItem* item,
