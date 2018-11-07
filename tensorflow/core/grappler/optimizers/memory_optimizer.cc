@@ -20,8 +20,9 @@ limitations under the License.
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
 
-#include <boost/functional/hash.hpp>
+// #include <boost/functional/hash.hpp>
 
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -1167,9 +1168,17 @@ static bool IdentifySwappingCandidates(
   return updated_graph;
 }
 
+struct pair_hash {
+  template <class T1, class T2>
+  std::size_t operator() (const std::pair<T1, T2>& pair) const
+  {
+    return std::hash<T1>()(pair.first) ^ std::hash<T2>()(pair.second);
+  }
+};
+
 static bool InitSwappingPass(
   Cluster* cluster, GrapplerItem* item,
-  std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo>* nodes_to_swap) {
+  std::unordered_map<std::pair<NodeDef*, int>, vDNNSwapInfo, pair_hash>* nodes_to_swap) {
   // file to initate swapping decision
   const std::string swappingDec = "/home/uniquesc/v-xuapen/vDNN_swapping/swap_info.log";
   std::fstream fin(swappingDec, fin.in);
@@ -1206,13 +1215,13 @@ static bool InitSwappingPass(
     int input_id;
     for (int i = 0; i != num_uses_left; i++) {
       fin >> tmp_node_name >> input_id;
-      NodeDef* fanout_to_swap_node = graph.GetNode(tmp_node_name)
+      NodeDef* fanout_to_swap_node = graph.GetNode(tmp_node_name);
       if (!fanout_to_swap_node) {
         std::cout << "Error fanout node name " << tmp_node_name << std::endl;
         return false;
       }
 
-      *(nodes_to_swap)[node].uses_left.push_back(
+      (*nodes_to_swap)[swapped_tensor].uses_left.push_back(
                              std::make_pair(fanout_to_swap_node, input_id));
     }
 
@@ -1222,7 +1231,7 @@ static bool InitSwappingPass(
       std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
       return false;
     }
-    *(nodes_to_swap)[node].in_trigger_node = in_trigger_node;
+    (*nodes_to_swap)[swapped_tensor].in_trigger_node = in_trigger_node;
   }
 }
 
@@ -1230,7 +1239,7 @@ static bool InitSwappingPass(
 bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
                       Cluster* cluster, GrapplerItem* item) {
   typedef std::pair<NodeDef*, int> pair1;
-  std::unordered_map<pair1, vDNNSwapInfo, boost::hash<pair1>> nodes_to_swap;
+  std::unordered_map<pair1, vDNNSwapInfo, pair_hash> nodes_to_swap;
   if (optimization_level == RewriterConfig::DEFAULT_MEM_OPT ||
       optimization_level == RewriterConfig::SWAPPING_HEURISTICS ||
       optimization_level == RewriterConfig::HEURISTICS) {
@@ -1259,7 +1268,8 @@ bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
       continue;
     }
 
-    VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
+    // VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
+    std::cout << "Will swap out " << node->name() << ": " << output_id << std::endl;
 
     const vDNNSwapInfo& swap_info = swap.second;
 
@@ -1267,15 +1277,16 @@ bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
     // input from another node
     // DONE: node->input(): "node:src_output"
     *swap_nodes.first->add_input() = strings::StrCat(node->name(), ":", output_id);
-    std::pair<NodeDef*, int> it;
-    for (it : swap_info.uses_left) {
+    // std::pair<NodeDef*, int> it;
+    for (auto& it : swap_info.uses_left) {
       *it.first->mutable_input(it.second) = swap_nodes.second->name();
     }
 
     NodeDef* in_trigger = swap_info.in_trigger_node;
     swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
 
-    VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
+    // VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
+    std::cout << in_trigger->name() << " as the swap in trigger node of " << node->name() << std::endl;
   }
 }
 
@@ -1536,7 +1547,7 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
       //                               &optimized_item, &skip_list);
       updated_graph |= SwappingPassvDNN(optimization_level_, cluster,
                                     &optimized_item);
-    }
+    } 
   }
 
   optimized_graph->Swap(&optimized_item.graph);
