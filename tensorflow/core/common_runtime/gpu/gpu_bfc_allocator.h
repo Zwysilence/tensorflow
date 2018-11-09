@@ -70,6 +70,13 @@ class GPUBFCAllocator : public BFCAllocator {
 
  private:
 
+  enum SwapStatus {
+    IN,
+    OUT,
+    SWAPPING_IN,
+    SWAPPING_OUT
+  };
+
   void SwapOut(const string& tensor_name);
 
   void SwapIn(const string& tensor_name);
@@ -79,6 +86,8 @@ class GPUBFCAllocator : public BFCAllocator {
   mutable std::mutex lock_;
 
   std::mutex mu_;
+
+  perftools::gputools::StreamExecutor* stream_exec_;
 
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
 

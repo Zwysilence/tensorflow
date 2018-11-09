@@ -21,6 +21,9 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <fstream>
+#include <thread>
+#include <chrono>
 
 #include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/common_runtime/pending_counts.h"
@@ -59,6 +62,8 @@ limitations under the License.
 #include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
+
+//std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out);
 
 namespace tensorflow {
 namespace {
@@ -1336,6 +1341,9 @@ void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs) {
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
     tensor->RecordTensorAccess(tensor_val.name, time_);
+    // if (step_id_ == 20) {
+    //   tensor_access_fout << tensor_val.name << "\t" << time_ << "\n";
+    // }
   }
 }
 
