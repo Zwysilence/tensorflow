@@ -35,6 +35,7 @@ limitations under the License.
 #include "tensorflow/core/protobuf/config.pb.h"
 
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
+#include "tensorflow/core/common_runtime/gpu/process_state.h"
 #include "tensorflow/core/common_runtime/device.h"
 
 namespace gpu = ::perftools::gputools;
@@ -86,8 +87,6 @@ class GPUBFCAllocator : public BFCAllocator {
   mutable std::mutex lock_;
 
   std::mutex mu_;
-
-  perftools::gputools::StreamExecutor* stream_exec_;
 
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
 

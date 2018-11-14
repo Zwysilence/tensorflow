@@ -687,7 +687,7 @@ Status DirectSession::Run(const RunOptions& run_options,
                                  executors_and_keys, run_metadata));
 
   int64 end_time = now_in_usec();
-  std::cout << "Step " << step_id << " consumed " << end_time - start_time << "\n";
+  std::cout << "Step " << step_id << " consumed " << (end_time - start_time) / 1000 << " ms\n";
 
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
@@ -702,7 +702,6 @@ Status DirectSession::Run(const RunOptions& run_options,
 
     // for (auto node_iter = node_range.begin(); node_iter != node_range.end(); ++node_iter)
       // auto node = *node_iter;
-    LOG(INFO) << "Num of executors is " << executors_and_keys->items.size();
     for (auto & item : executors_and_keys->items) {
       for (Node * node : item.graph->nodes()) {
         if (str_util::StartsWith(node->name(), "swap_out")) {
