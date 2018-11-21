@@ -305,6 +305,15 @@ bool StreamExecutor::GetConvolveAlgorithms(
                                             cc_minor, out_algorithms);
 }
 
+bool StreamExecutor::GetFixedConvolveAlgorithms(
+    int algo_id, std::vector<dnn::AlgorithmDesc> *out_algorithms) {
+  dnn::DnnSupport *dnn_support = AsDnn();
+  if (!dnn_support) {
+    return false;
+  }
+  return dnn_support->GetFixedConvolveAlgorithms(algo_id, out_algorithms);
+}
+
 bool StreamExecutor::GetRnnAlgorithms(
     std::vector<dnn::AlgorithmDesc> *out_algorithms) {
   dnn::DnnSupport *dnn_support = AsDnn();

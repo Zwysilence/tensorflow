@@ -197,6 +197,9 @@ class CudnnSupport : public dnn::DnnSupport {
       bool with_winograd_nonfused, int cc_major, int cc_minor,
       std::vector<dnn::AlgorithmDesc>* out_algorithms) override;
 
+  bool GetFixedConvolveAlgorithms(
+      int algo_id, std::vector<dnn::AlgorithmDesc>* out_algorithms) override;
+
   bool GetRnnAlgorithms(
       std::vector<dnn::AlgorithmDesc>* out_algorithms) override;
 

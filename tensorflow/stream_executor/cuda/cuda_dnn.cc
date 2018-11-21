@@ -2874,6 +2874,21 @@ bool CudnnSupport::GetConvolveAlgorithms(
   return true;
 }
 
+bool CudnnSupport::GetFixedConvolveAlgorithms(
+    int algo_id, std::vector<dnn::AlgorithmDesc>* out_algorithms) {
+  std::vector<dnn::AlgorithmDesc::Index> algo_types = {
+    CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM,
+    CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM
+  };
+
+  out_algorithms->clear();
+  for (auto i: algo_types) {
+    out_algorithms->push_back({i, /*use_tensor_ops*/false});
+    // Ignore the use_tensor_ops is true for now
+  }
+  return true;
+}
+
 bool CudnnSupport::GetRnnAlgorithms(
     std::vector<dnn::AlgorithmDesc>* out_algorithms) {
   std::vector<dnn::AlgorithmDesc::Index> algo_types = {

@@ -709,8 +709,27 @@ void LaunchConv2DOp<GPUDevice, T>::operator()(
   if (cudnn_use_autotune &&
       !AutoTuneConv::GetInstance()->Find(conv_parameters, &algorithm_config)) {
     std::vector<AlgorithmDesc> algorithms;
-    CHECK(stream->parent()->GetConvolveAlgorithms(
-        conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(), &algorithms));
+
+    const char* tf_conv_algo_id_str = getenv("TF_CONV_ALGO_ID");
+    if (tf_conv_algo_id_str != nullptr &&
+        strcmp(tf_conv_algo_id_str, "") != 0) {
+      int tf_conv_algo_id = -1;
+      if (strings::safe_strto32(tf_conv_algo_id_str,
+                                &tf_conv_algo_id)) {
+        LOG(WARNING) << "Invalid value for env-var: TF_CONV_ALGO_ID";
+      }
+
+      if (tf_conv_algo_id == -1) {
+        CHECK(stream->parent()->GetConvolveAlgorithms(
+            conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(), &algorithms));
+      } else {
+        CHECK_LE(0, tf_conv_algo_id);
+        CHECK(stream->parent()->GetFixedConvolveAlgorithms(tf_conv_algo_id, &algorithms));
+      }
+    } else {
+      CHECK(stream->parent()->GetConvolveAlgorithms(
+          conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(), &algorithms));
+    }
     ProfileResult best_result;
     ProfileResult best_result_no_scratch;
     for (auto profile_algorithm : algorithms) {

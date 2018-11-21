@@ -354,6 +354,9 @@ class StreamExecutor {
   bool GetConvolveAlgorithms(bool with_winograd_nonfused,
                              std::vector<dnn::AlgorithmDesc> *out_algorithms);
 
+  // Returns the fixed fwd convolution algorithms
+  bool GetFixedConvolveAlgorithms(int algo_id, std::vector<dnn::AlgorithmDesc> *out_algorithms);
+
   // Returns the list of supported algorithms for rnn operation.
   bool GetRnnAlgorithms(std::vector<dnn::AlgorithmDesc> *out_algorithms);
 

@@ -1202,6 +1202,9 @@ class DnnSupport {
       bool with_winograd_nonfused, int cc_major, int cc_minor,
       std::vector<AlgorithmDesc>* out_algorithms);
 
+  virtual bool GetFixedConvolveAlgorithms(
+      int algo_id, std::vector<AlgorithmDesc>* out_algorithms);
+
   // Returns a list of supported rnn algorithms.
   virtual bool GetRnnAlgorithms(std::vector<AlgorithmDesc>* out_algorithms);
 
