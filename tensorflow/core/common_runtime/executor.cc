@@ -1341,9 +1341,9 @@ void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs) {
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
     tensor->RecordTensorAccess(tensor_val.name, time_);
-    // if (step_id_ == 20) {
-    //   tensor_access_fout << tensor_val.name << "\t" << time_ << "\n";
-    // }
+    //if (step_id_ == 20 && tensor->AllocatorName() == "GPU_0_bfc") {
+    //  tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+    //}
   }
 }
 

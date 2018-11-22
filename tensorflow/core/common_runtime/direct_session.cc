@@ -556,6 +556,7 @@ Status DirectSession::RunInternal(int64 step_id, const RunOptions& run_options,
     }
     item.executor->RunAsync(args, barrier->Get());
   }
+  printf("After executor->RunAsync\n");
   WaitForNotification(&run_state, &step_cancellation_manager,
                       run_options.timeout_in_ms() > 0
                           ? run_options.timeout_in_ms()
@@ -634,6 +635,7 @@ Status DirectSession::Run(const RunOptions& run_options,
                           RunMetadata* run_metadata) {
   TF_RETURN_IF_ERROR(CheckNotClosed());
   TF_RETURN_IF_ERROR(CheckGraphCreated("Run()"));
+  printf("Step start\n");
   direct_session_runs->GetCell()->IncrementBy(1);
 
   // Extract the inputs names for this run of the session.

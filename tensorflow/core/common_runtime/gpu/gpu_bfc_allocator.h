@@ -78,9 +78,9 @@ class GPUBFCAllocator : public BFCAllocator {
     SWAPPING_OUT
   };
 
-  void SwapOut(const string& tensor_name);
+  void SwapOut(const string& tensor_name, double* elapsed);
 
-  void SwapIn(const string& tensor_name);
+  void SwapIn(const string& tensor_name, double* elapsed);
 
   void LoadSwapPolicy();
 
@@ -98,6 +98,7 @@ class GPUBFCAllocator : public BFCAllocator {
     std::pair<void*, int64> cpu_buffer; // set if buffer swapped out
     condition_variable_and_mutex cv_mu;
     int data_ready; // false if buffer swapped out
+    bool can_deallocate_after_swap_out;
   };
 
   struct TriggerInfo {
@@ -120,6 +121,8 @@ class GPUBFCAllocator : public BFCAllocator {
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
+
+  std::unordered_set<std::string> skip_set_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };

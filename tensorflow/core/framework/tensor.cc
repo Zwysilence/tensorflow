@@ -142,6 +142,14 @@ class Buffer : public BufferBase {
     alloc_->Notify(this);
   }
 
+  int64 BufferSize() {
+    return alloc_->AllocatedSize((void*)data_);
+  }
+
+  string AllocatorName() {
+    return alloc_->Name();
+  }
+
  private:
   T* data_;
   int64 elem_;
@@ -665,6 +673,16 @@ Tensor::~Tensor() { UnrefIfNonNull(buf_); }
 void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   if (buf_ == nullptr) return;
   buf_->RecordTensorAccess(tensor_name, time_);
+}
+
+string Tensor::AllocatorName() {
+  if (buf_ == nullptr) return "";
+  return buf_->AllocatorName();
+}
+
+int64 Tensor::BufferSize() {
+  if (buf_ == nullptr) return 0;
+  return buf_->BufferSize();
 }
 
 void Tensor::RecordSwapContext(const TensorParams &params) {

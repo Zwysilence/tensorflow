@@ -468,6 +468,10 @@ class Tensor {
 
   void RecordTensorAccess(const string& tensor_name, uint64 time_);
 
+  string AllocatorName();
+
+  int64 BufferSize();
+
   void RecordSwapContext(const TensorParams &params);
 
   void IncrementUsingCount();
@@ -580,13 +584,17 @@ class TensorBuffer : public core::RefCounted {
   // Whether this TensorBuffer owns the underlying memory.
   virtual bool OwnsMemory() const { return true; }
 
-  virtual void RecordTensorAccess(const string& tensor_name, uint64 time_) {};
+  virtual void RecordTensorAccess(const string& tensor_name, uint64 time_) {}
 
-  virtual void RecordSwapContext(const TensorParams &params) {};
+  virtual int64 BufferSize() { return 0; }
 
-  virtual void IncrementUsingCount() {};
+  virtual string AllocatorName() { return ""; }
 
-  virtual void DecrementUsingCount() {};
+  virtual void RecordSwapContext(const TensorParams &params) {}
+
+  virtual void IncrementUsingCount() {}
+
+  virtual void DecrementUsingCount() {}
 
   virtual int UsingCount() { return 0; }
 

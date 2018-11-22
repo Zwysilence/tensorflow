@@ -32,6 +32,7 @@ limitations under the License.
 using perftools::gputools::DeviceMemoryBase;
 using perftools::gputools::Stream;
 
+
 namespace tensorflow {
 
 GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
@@ -71,19 +72,26 @@ void GPUBFCAllocator::SaveTensorTrace() {
 }
 
 void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64 _time) {
+  static double swap_time = 0;
+  double elapsed = 0;
   if (tensor_swap_params_map_.count(tensor_name)) {
-    SwapIn(tensor_name);
+    SwapIn(tensor_name, &elapsed);
     auto &swap_params = tensor_swap_params_map_[tensor_name];
     auto &cv_mu = swap_params.cv_mu;
+    printf("wait\t%s\n", tensor_name.c_str());
+    //LOG(INFO) << "wait\t" << tensor_name;
     std::unique_lock<std::mutex> l(*(cv_mu.second));
     int* ready = &(swap_params.data_ready);
-    //printf("wait %s\n", tensor_name.c_str());
     cv_mu.first->wait(l, [ready]() { return *ready == SwapStatus::IN; });
-    //printf("%s ready\n", tensor_name.c_str());
+    printf("ready\t%s\n", tensor_name.c_str());
+    //LOG(INFO) << "ready\t" << tensor_name;
     l.unlock();
   }
+  swap_time += elapsed;
+  elapsed = 0;
 
   if (swap_triggers_.count(tensor_name) == 0) {
+    printf("Thread id %d, Normal tensor %s\t%ld\n", std::this_thread::get_id(), tensor_name.c_str(), std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count());
     return;
   }
 
@@ -98,12 +106,15 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
     }
   }
   if (swap_trigger.out_trigger_count != 0 && cnt == swap_trigger.out_trigger_count) {
-    SwapOut(tensor_name);
+    SwapOut(tensor_name, &elapsed);
   }
+  swap_time += elapsed;
+  elapsed = 0;
 
   if (swap_trigger.in_trigger_count != 0 && cnt == swap_trigger.in_trigger_count) {
-    SwapIn(swap_trigger.in_tensor);
+    SwapIn(swap_trigger.in_tensor, &elapsed);
   }
+  swap_time += elapsed;
 }
 
 void GPUBFCAllocator::CleanTensorsAccess() {
@@ -127,6 +138,7 @@ void GPUBFCAllocator::RecordSwapContext(const TensorParams& params, TensorBuffer
   swap_params.device_context = params.device_context;
   swap_params.tensor_buffer = tensor_buf;
   swap_params.data_ready = SwapStatus::IN;
+  swap_params.can_deallocate_after_swap_out = true;
   buffer_tensor_map_[tensor_buf] = tensor_name;
 }
 
@@ -138,7 +150,7 @@ void GPUBFCAllocator::Notify(const TensorBuffer* tensor_buf) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::fstream fin("/tmp/swap_policy.txt", fin.in);
+  std::fstream fin("/tmp/daihulin/swap_policy.txt", fin.in);
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
@@ -187,8 +199,11 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
   return Status::OK();
 }
 
-void GPUBFCAllocator::SwapOut(const string& tensor_name) {
+void GPUBFCAllocator::SwapOut(const string& tensor_name, double* elapsed) {
   CHECK(tensor_swap_params_map_.count(tensor_name));
+  //if (skip_set_.count(tensor_name) != 0)
+  //  return;
+  auto start = std::chrono::high_resolution_clock::now();
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
   {
@@ -199,7 +214,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name) {
       return;
     *ready = SwapStatus::SWAPPING_OUT;
   }
-  //printf("start swap out %s\n", tensor_name.c_str());
+  printf("Swap out %s\n", tensor_name.c_str());
+  //LOG(INFO) << "Swap out " << tensor_name;
   Device* device = swap_params.device;
   DeviceContext* device_context = swap_params.device_context;
   const DeviceBase::GpuDeviceInfo* dev_info = nullptr;
@@ -229,7 +245,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name) {
   // Wait for the sender's main stream to make sure the data are available.
   send_device_to_host_stream->ThenWaitFor(send_stream);
 
-  auto start = std::chrono::high_resolution_clock::now();
   int64 total_bytes = size;
   if (total_bytes > 0) {
     DeviceMemoryBase gpu_src_ptr(src_ptr, total_bytes);
@@ -248,23 +263,39 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name) {
         tensor_buffer->Unref();
         auto &cv_mu = swap_params.cv_mu;
         std::unique_lock<std::mutex> lk(*(cv_mu.second));
-        cv_mu.first->wait(lk, [tensor_buffer]() { 
-          return tensor_buffer->UsingCount() == 0; 
-        });
-        swap_params.data_ready = SwapStatus::OUT;
-        this->DeallocateRaw(tensor_buffer->data());
-        tensor_buffer->set_data(nullptr);
+        if (swap_params.can_deallocate_after_swap_out) {
+          printf("DONE: thread id %d, swap out %s, wait for deallocate\n", std::this_thread::get_id(), swap_params.tensor_name.c_str());
+          //LOG(INFO) << "DONE: swap out " << swap_params.tensor_name << ", wait for deallocate";
+          cv_mu.first->wait(lk, [tensor_buffer]() { 
+            return tensor_buffer->UsingCount() == 0; 
+          });
+          printf("DONE: thread id %d, swap out %s, can deallocate\n", std::this_thread::get_id(), swap_params.tensor_name.c_str());
+          //LOG(INFO) << "DONE: swap out " << swap_params.tensor_name << ", can deallocate";
+          swap_params.data_ready = SwapStatus::OUT;
+          this->DeallocateRaw(tensor_buffer->data());
+          tensor_buffer->set_data(nullptr);
+        } else {
+          printf("DONE: swap out %s, no need to deallocate\n", swap_params.tensor_name.c_str());
+          //LOG(INFO) << "DONE: swap out " << swap_params.tensor_name << ", no need to deallocate";
+          swap_params.data_ready = SwapStatus::IN;
+          swap_params.can_deallocate_after_swap_out = true;
+        }
         cv_mu.first->notify_all();
         lk.unlock();
       });
   //swap_params.data_ready = SwapStatus::OUT;
   swap_params.cpu_buffer = std::make_pair(dst_ptr, total_bytes);
-  //printf("end swap out %s\n", tensor_name.c_str());
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> elap = end - start;
+  *elapsed = elap.count();
+  printf("end swap out %s\n", tensor_name.c_str());
+  //LOG(INFO) << "end swap out " << tensor_name;
 }
 
-void GPUBFCAllocator::SwapIn(const string& tensor_name) {
+void GPUBFCAllocator::SwapIn(const string& tensor_name, double* elapsed) {
   //std::lock_guard<std::mutex> l(lock_);
   CHECK(tensor_swap_params_map_.count(tensor_name));
+  auto start = std::chrono::high_resolution_clock::now();
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   int* ready = &(swap_params.data_ready);
   auto &cv_mu = swap_params.cv_mu;
@@ -274,16 +305,26 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     //printf("swap in locking %s\n", tensor_name.c_str());
     int *ready = &(swap_params.data_ready);
     if (*ready != SwapStatus::OUT) {
-      if (*ready != SwapStatus::SWAPPING_OUT)
-        return;
-      //printf("wait for %s swapping out\n", tensor_name.c_str());
-      cv_mu.first->wait(l, [ready]() { return *ready != SwapStatus::SWAPPING_OUT; });
-      if (*ready != SwapStatus::OUT)
-        return;
+      //if (*ready != SwapStatus::SWAPPING_OUT)
+      //  return;
+      //printf("wait\t%s swap out\n", tensor_name.c_str());
+      //swap_params.can_deallocate_after_swap_out = false;
+      //cv_mu.first->wait(l, [ready]() { return *ready != SwapStatus::SWAPPING_OUT; });
+      //printf("ready\t%s swap out\n", tensor_name.c_str());
+      ////{
+      ////  std::lock_guard<std::mutex> l(mu_);
+      ////  skip_set_.insert(tensor_name);
+      ////}
+      //if (*ready != SwapStatus::OUT)
+      //  return;
+      if (*ready == SwapStatus::SWAPPING_OUT)
+        swap_params.can_deallocate_after_swap_out = false;
+      return;
     }
     *ready = SwapStatus::SWAPPING_IN;
   }
-  //printf("start swap in %s\n", tensor_name.c_str());
+  printf("Swap in %s\n", tensor_name.c_str());
+  //LOG(INFO) << "Swap in " << tensor_name;
   auto& cpu_buffer = swap_params.cpu_buffer;
   void* src_ptr = cpu_buffer.first;
   int64 total_bytes = cpu_buffer.second;
@@ -327,9 +368,15 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
         swap_params.data_ready = SwapStatus::IN;
         swap_params.tensor_buffer->set_data(dst_ptr);
         cuda_allocator->DeallocateRaw(src_ptr);
+        printf("DONE: swap in %s\n", swap_params.tensor_name.c_str());
+        //LOG(INFO) << "DONE: swap in " << swap_params.tensor_name;
         cv_mu.first->notify_one();
       });
-  //printf("end swap in %s\n", tensor_name.c_str());
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> elap = end - start;
+  *elapsed = elap.count();
+  printf("end swap in %s\n", tensor_name.c_str());
+  //LOG(INFO) << "end swap in " << tensor_name;
 }
 
 }  // namespace tensorflow
