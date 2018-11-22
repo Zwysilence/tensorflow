@@ -28,6 +28,11 @@ bool DnnSupport::GetConvolveAlgorithms(
   return false;
 }
 
+bool DnnSupport::GetFixedConvolveAlgorithms(
+    int algo_id, std::vector<AlgorithmDesc>* out_algorithms) {
+  return false;      
+}
+
 bool DnnSupport::GetRnnAlgorithms(std::vector<AlgorithmDesc>* out_algorithms) {
   return false;
 }
