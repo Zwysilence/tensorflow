@@ -635,7 +635,7 @@ Status DirectSession::Run(const RunOptions& run_options,
                           RunMetadata* run_metadata) {
   TF_RETURN_IF_ERROR(CheckNotClosed());
   TF_RETURN_IF_ERROR(CheckGraphCreated("Run()"));
-  printf("Step start\n");
+  // printf("Step start\n");
   direct_session_runs->GetCell()->IncrementBy(1);
 
   // Extract the inputs names for this run of the session.
@@ -689,7 +689,7 @@ Status DirectSession::Run(const RunOptions& run_options,
                                  executors_and_keys, run_metadata));
 
   int64 end_time = now_in_usec();
-  std::cout << "Step " << step_id << " consumed " << (end_time - start_time) / 1000 << " ms\n";
+  // std::cout << "Step " << step_id << " consumed " << (end_time - start_time) / 1000 << " ms\n";
 
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
