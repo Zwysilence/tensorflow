@@ -142,12 +142,6 @@ class Allocator {
 
   virtual void RecordSwapContext(const TensorParams &params, TensorBuffer * tensor_buf) {}
 
-  virtual void CleanTensorsAccess() {}
-
-  virtual void SaveTensorTrace() {}
-  
-  virtual void SaveMapOfTensorToBuf() {}
-
   virtual void Notify(const TensorBuffer*) {}
   // Returns true if this allocator tracks the sizes of allocations.
   // RequestedSize and AllocatedSize must be overridden if

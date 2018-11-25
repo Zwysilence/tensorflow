@@ -59,13 +59,9 @@ class GPUBFCAllocator : public BFCAllocator {
                   const GPUOptions& gpu_options, const string& name);
   virtual ~GPUBFCAllocator() {}
 
-  void SaveTensorTrace();
-
   void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf);
 
   void RecordTensorAccess(const string& tensor_name, const uint64 _time);
-
-  void CleanTensorsAccess();
 
   void Notify(const TensorBuffer* tensor_buf);
 
@@ -78,9 +74,9 @@ class GPUBFCAllocator : public BFCAllocator {
     SWAPPING_OUT
   };
 
-  void SwapOut(const string& tensor_name, double* elapsed);
+  void SwapOut(const string& tensor_name);
 
-  void SwapIn(const string& tensor_name, double* elapsed);
+  void SwapIn(const string& tensor_name);
 
   void LoadSwapPolicy();
 
@@ -106,8 +102,8 @@ class GPUBFCAllocator : public BFCAllocator {
     int access_count;
     int out_trigger_count;  // 0 if tensor will not be swapped out
     int in_trigger_count;   // 0 if tensor is not a trigger node of any swap tensor
-    int total_access_count;
-    string in_tensor; // in_tensor will be swapped in if the tensor is accessed in_trigger times,
+    int total_access_count; // total access count of this tensor in one step
+    string in_tensor; // in_tensor will be swapped in if the tensor is accessed in_trigger_count times,
                       // do nothing if in_trigger equals 0
     string in_trigger;
     TensorSwapParams* out_params;  // swap params of in_tensor
@@ -121,8 +117,6 @@ class GPUBFCAllocator : public BFCAllocator {
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
-
-  std::unordered_set<std::string> skip_set_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };
