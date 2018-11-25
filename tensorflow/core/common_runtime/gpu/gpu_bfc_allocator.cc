@@ -104,7 +104,12 @@ void GPUBFCAllocator::Notify(const TensorBuffer* tensor_buf) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::fstream fin("/tmp/swap_policy.txt", fin.in);
+  std::string swap_policy_file = "/tmp/swap_policy.txt";
+  std::fstream fin(swap_policy_file, fin.in);
+  if (!fin.is_open()) {
+    LOG(FATAL) << "open " << swap_policy_file << " failed.";
+    return;
+  }
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
@@ -232,7 +237,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name) {
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
-  int* ready = &(swap_params.data_ready);
   auto &cv_mu = swap_params.cv_mu;
   {
     std::unique_lock<std::mutex> l(*(cv_mu.second));
