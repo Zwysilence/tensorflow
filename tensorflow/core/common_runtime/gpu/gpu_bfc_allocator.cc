@@ -150,7 +150,7 @@ void GPUBFCAllocator::Notify(const TensorBuffer* tensor_buf) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::fstream fin("/tmp/daihulin/swap_policy.txt", fin.in);
+  std::fstream fin("/tmp/swap_policy.txt", fin.in);
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
