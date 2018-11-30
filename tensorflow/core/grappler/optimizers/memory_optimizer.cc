@@ -1219,7 +1219,7 @@ static bool InitSwappingPass(
   // const std::string swappingDec = "/vpublic01/frog/v-xuapen/vDNN_swapping/swap_info.log";
   std::fstream fin(swappingDec, fin.in);
   if (!fin.is_open()) {
-    std::cout << "Fail to open file " << swappingDec << std::endl;
+    LOG(ERROR) << "Fail to open file "<< swappingDec;
     return false;
   }
 
@@ -1233,7 +1233,7 @@ static bool InitSwappingPass(
   while (fin >> node_name >> output_id >> num_uses_left) {
     NodeDef* node = graph.GetNode(node_name);
     if (!node) {
-      std::cout << "Error swap node name " << node_name << std::endl;
+      LOG(ERROR) << "Error swap node name " << node_name;
       return false;
     }
 
@@ -1243,7 +1243,7 @@ static bool InitSwappingPass(
 
     // Check if swapped this tensor out
     if (nodes_to_swap->find(swapped_tensor) != nodes_to_swap->end()) {
-      std::cout << "Already swap this tensor out: " << node_name << ":" << output_id << std::endl;
+      LOG(WARNING) << "Already swap this tensor out: " << node_name << ":" << output_id;
       return false;
     }
 
@@ -1253,7 +1253,7 @@ static bool InitSwappingPass(
       fin >> tmp_node_name >> input_id;
       NodeDef* fanout_to_swap_node = graph.GetNode(tmp_node_name);
       if (!fanout_to_swap_node) {
-        std::cout << "Error fanout node name " << tmp_node_name << std::endl;
+        LOG(ERROR) << "Error fanout node name " << tmp_node_name;
         return false;
       }
 
@@ -1269,7 +1269,7 @@ static bool InitSwappingPass(
       fin >> tmp_node_name;
       NodeDef* node = graph.GetNode(tmp_node_name);
       if (!node) {
-        std::cout << "Error conv fanout node name " << tmp_node_name << std::endl;
+        LOG(ERROR) << "Error conv fanout node name " << tmp_node_name;
         return false;
       }
       (*nodes_to_swap)[swapped_tensor].conv_fanouts.push_back(node);
@@ -1278,7 +1278,7 @@ static bool InitSwappingPass(
     fin >> in_trigger_node_name;
     NodeDef* in_trigger_node = graph.GetNode(in_trigger_node_name);
     if (!in_trigger_node) {
-      std::cout << "Error in trigger node name " << in_trigger_node_name << std::endl;
+      LOG(ERROR) << "Error in trigger node name " << in_trigger_node_name;
       return false;
     }
     (*nodes_to_swap)[swapped_tensor].in_trigger_node = in_trigger_node;
@@ -1291,7 +1291,7 @@ static bool InitSwappingPass(
       fin >> tmp_node_name;
       NodeDef* node = graph.GetNode(tmp_node_name);
       if (!node) {
-        std::cout << "Error in trigger fanout node name " << tmp_node_name << std::endl;
+        LOG(ERROR) << "Error in trigger fanout node name " << tmp_node_name;
         return false;
       }
       (*nodes_to_swap)[swapped_tensor].inTrigger_fanouts.push_back(node);
@@ -1333,8 +1333,7 @@ bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
       continue;
     }
 
-    // VLOG(3) << "Will swap out" << node->name() << ": " << output_id;
-    std::cout << "Will swap out " << node->name() << ": " << output_id << std::endl;
+    // LOG(INFO) << "Will swap out " << node->name() << ": " << output_id;
 
     const vDNNSwapInfo& swap_info = swap.second;
 
@@ -1356,8 +1355,7 @@ bool SwappingPassvDNN(RewriterConfig::MemOptType optimization_level,
     NodeDef* in_trigger = swap_info.in_trigger_node;
     swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
 
-    // VLOG(3) << in_trigger->name() << " as the trigger node of " << node->name();
-    std::cout << in_trigger->name() << " as the swap in trigger node of " << node->name() << std::endl;
+    // LOG(INFO) << in_trigger->name() << " as the swap in trigger node of " << node->name();
 
     // TODO: add control dependencies from swap_in node to all fanouts of intrigger node
     // to sync the stream(mem) and stream(comp)
