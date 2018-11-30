@@ -1033,12 +1033,45 @@ static bool IdentifySwappingCandidates(
       VLOG(1) << "Peak memory usage unknown for device " << name;
       continue;
     }
+    int64 gpu_mem_size = -1;
+    const char* gpu_mem_limit_str = getenv("TF_GPU_MEM_LIMIT");
+    if (gpu_mem_limit_str != nullptr &&
+        strcmp(gpu_mem_limit_str, "") != 0) {
+      int gpu_mem_limit = -1;
+      if (!strings::safe_strto64(gpu_mem_limit_str, &gpu_mem_limit)) {
+        LOG(WARNING) << "Invalid value for env-var: TF_GPU_MEM_LIMIT";
+        gpu_mem_size = prop.memory_size();
+      } else {
+        gpu_mem_size = gpu_mem_limit;
+      }
+    } else {
+      gpu_mem_size = prop.memory_size();
+    }
+
+    // extra_required_savings should be zero or negative
+    int64 extra_required_savings = 0;
+    const char* extra_required_savings_str = getenv("TF_EXTRA_REQUIRED_SAVINGS");
+    if (extra_required_savings_str != nullptr &&
+        strcmp(extra_required_savings_str, "") != 0) {
+      if (!strings::safe_strto64(extra_required_savings_str,
+                                &extra_required_savings)) {
+        LOG(WARNING) << "Invalid value for env-var: TF_EXTRA_REQUIRED_SAVINGS";
+      } else {
+        LOG(INFO) << "Extra required savings is set to : " << extra_required_savings;
+      }
+    }
+
     const GraphMemory::MemoryUsage& mem_usage = memory.GetPeakMemoryUsage(name);
 
-    if (mem_usage.used_memory <= prop.memory_size()) {
+    if (mem_usage.used_memory <= (gpu_mem_size+extra_required_savings) {
       continue;
     }
-    int64 required_savings = mem_usage.used_memory - prop.memory_size();
+    /* if (mem_usage.used_memory <= prop.memory_size()) {
+      continue;
+    }
+    int64 required_savings = mem_usage.used_memory - prop.memory_size(); */
+    int64 required_savings = mem_usage.used_memory - gpu_mem_size - extra_required_savings;
+    LOG(INFO) << "Total required savings: " << required_savings;
 
     std::unordered_map<string, Costs::NanoSeconds> op_completion_times;
     {
@@ -1475,6 +1508,17 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
   }
   GraphView view(&item->graph);
 
+  // delete the unnecessary out_trigger dependency or not
+  const char* delete_out_trigger_depen_str = getenv("TF_DELETE_OUT_TRIGGER_DEPEN");
+  bool delete_out_trigger_depen = false;
+  if (delete_out_trigger_depen_str != nullptr &&
+      strcmp(delete_out_trigger_depen_str, "") != 0) {
+    if (strcmp(delete_out_trigger_depen_str, "true") == 0) {
+      delete_out_trigger_depen = true;
+      LOG(INFO) << "Delete the out_trigger dependency";
+    }
+  }
+
   bool updated_graph = false;
 
   for (auto& swap : nodes_to_swap) {
@@ -1523,7 +1567,9 @@ bool SwappingPass(RewriterConfig::MemOptType optimization_level,
       *node->mutable_input(input_id) = swap_nodes.second->name();
 
       // Add the control dependencies needed to delay the execution of the swap.
-      out_trigger->add_input(strings::StrCat("^", swap_nodes.first->name()));
+      if (!delete_out_trigger_depen) {
+        out_trigger->add_input(strings::StrCat("^", swap_nodes.first->name()));
+      }
       swap_nodes.second->add_input(strings::StrCat("^", in_trigger->name()));
 
       // Make sure we won't try to swap the swap nodes in subsequent passes.
@@ -1572,6 +1618,15 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   std::unordered_set<string> skip_list;
   // Bound the number of rewrite passes to avoid long processing times on graphs
   // that simply won't fit in memory.
+  const char* swapping_option_str = getenv("TF_SWAPPING_OPTION");
+  int swapping_option = 0;
+  if (swapping_option_str != nullptr &&
+      strcmp(swapping_option_str, "") != 0) {
+    if (!strings::safe_strto32(swapping_option_str, &swapping_option)) {
+      LOG(WARNING) << "Invalid value for env-var: TF_SWAPPING_OPTION";
+    }
+  }
+
   bool updated_graph = true;
   for (int i = 0; i < 25 && updated_graph; ++i) {
     updated_graph = false;
@@ -1587,11 +1642,20 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
          optimization_level_ == RewriterConfig::HEURISTICS ||
          optimization_level_ == RewriterConfig::MANUAL) &&
         cluster != nullptr) {
-      // updated_graph |= SwappingPass(optimization_level_, cluster,
-      //                               &optimized_item, &skip_list);
-      updated_graph |= SwappingPassvDNN(optimization_level_, cluster,
-                                    &optimized_item);
-    } 
+      if (swapping_option == 0) {
+        LOG(INFO) << "Use Tensorflow default SwappingPass";
+        updated_graph |= SwappingPass(optimization_level_, cluster,
+                                      &optimized_item, &skip_list);
+      }
+      else if (swapping_option == 1) {
+        LOG(INFO) << "Use vDNN SwappingPass";
+        updated_graph |= SwappingPassvDNN(optimization_level_, cluster,
+                                      &optimized_item);
+      }
+      else {
+        LOG(ERROR) << "Unavailable swapping option!";
+      }
+    }
   }
 
   optimized_graph->Swap(&optimized_item.graph);
