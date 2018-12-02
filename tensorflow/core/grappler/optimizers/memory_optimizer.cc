@@ -1037,7 +1037,7 @@ static bool IdentifySwappingCandidates(
     const char* gpu_mem_limit_str = getenv("TF_GPU_MEM_LIMIT");
     if (gpu_mem_limit_str != nullptr &&
         strcmp(gpu_mem_limit_str, "") != 0) {
-      int gpu_mem_limit = -1;
+      int64 gpu_mem_limit = -1;
       if (!strings::safe_strto64(gpu_mem_limit_str, &gpu_mem_limit)) {
         LOG(WARNING) << "Invalid value for env-var: TF_GPU_MEM_LIMIT";
         gpu_mem_size = prop.memory_size();
@@ -1063,7 +1063,7 @@ static bool IdentifySwappingCandidates(
 
     const GraphMemory::MemoryUsage& mem_usage = memory.GetPeakMemoryUsage(name);
 
-    if (mem_usage.used_memory <= (gpu_mem_size+extra_required_savings) {
+    if (mem_usage.used_memory <= (gpu_mem_size+extra_required_savings)) {
       continue;
     }
     /* if (mem_usage.used_memory <= prop.memory_size()) {
