@@ -74,9 +74,13 @@ class GPUBFCAllocator : public BFCAllocator {
     SWAPPING_OUT
   };
 
-  void SwapOut(const string& tensor_name);
-
   void SwapIn(const string& tensor_name);
+
+  inline void SwapOut(const string& tensor_name) {
+    SwapOut(tensor_name, 0);
+  }
+
+  void SwapOut(const string& tensor_name, const int64 retain_size);
 
   void LoadSwapPolicy();
 
@@ -91,7 +95,8 @@ class GPUBFCAllocator : public BFCAllocator {
     Device* device;
     DeviceContext* device_context;
     TensorBuffer* tensor_buffer;
-    std::pair<void*, int64> cpu_buffer; // set if buffer swapped out
+    std::pair<void*, int64> swapped_cpu_buffer; // set if buffer swapped out
+    std::pair<void*, int64> swapped_gpu_buffer; // set if buffer swapped out
     condition_variable_and_mutex cv_mu;
     int data_ready; // false if buffer swapped out
     bool can_deallocate_after_swap_out;
