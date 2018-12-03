@@ -260,7 +260,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   // Wait for the sender's main stream to make sure the data are available.
   send_device_to_host_stream->ThenWaitFor(send_stream);
 
-  DeviceMemoryBase gpu_src_ptr(src_ptr, cpu_part_size);
+  DeviceMemoryBase gpu_src_ptr((void*)((uintptr_t)src_ptr + gpu_part_size), cpu_part_size);
   send_device_to_host_stream->ThenMemcpy(cpu_part_dst_ptr, gpu_src_ptr, cpu_part_size);
 
   // Use of the input may outlive stack scope, so keep a ref.
