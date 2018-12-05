@@ -25,6 +25,8 @@ limitations under the License.
 #include <condition_variable>
 #include <utility>
 #include <mutex>
+#include <cuda_runtime.h>
+#include <functional>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
@@ -63,7 +65,7 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void RecordTensorAccess(const string& tensor_name, const uint64 _time);
 
-  void Notify(const TensorBuffer* tensor_buf);
+  void Notify(TensorBuffer* tensor_buf);
 
  private:
 
@@ -100,6 +102,7 @@ class GPUBFCAllocator : public BFCAllocator {
     condition_variable_and_mutex cv_mu;
     int data_ready; // false if buffer swapped out
     bool can_deallocate_after_swap_out;
+    bool then_deallocate;
   };
 
   struct TriggerInfo {
@@ -122,6 +125,18 @@ class GPUBFCAllocator : public BFCAllocator {
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
+
+  static cudaStream_t device_to_device_stream_;
+
+  static cudaStream_t host_to_device_stream_;
+
+  static cudaStream_t device_to_host_stream_;
+
+  static void CUDART_CB CudaCallback(cudaStream_t stream, cudaError_t status, void* done) {
+    auto func = static_cast<std::function<void()>* >(done);
+    (*func)();
+    delete func;
+  }
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };

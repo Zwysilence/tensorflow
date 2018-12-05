@@ -58,7 +58,7 @@ GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
 
 void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64 _time) {
   if (tensor_swap_params_map_.count(tensor_name)) {
-    //SwapIn(tensor_name);
+    SwapIn(tensor_name);
     auto &swap_params = tensor_swap_params_map_[tensor_name];
     auto &cv_mu = swap_params.cv_mu;
     std::unique_lock<std::mutex> l(*(cv_mu.second));
@@ -100,18 +100,26 @@ void GPUBFCAllocator::RecordSwapContext(const TensorParams& params, TensorBuffer
   swap_params.tensor_buffer = tensor_buf;
   swap_params.data_ready = SwapStatus::IN;
   swap_params.can_deallocate_after_swap_out = true;
+  swap_params.then_deallocate = false;
   buffer_tensor_map_[tensor_buf] = tensor_name;
 }
 
-void GPUBFCAllocator::Notify(const TensorBuffer* tensor_buf) {
-  if (buffer_tensor_map_.count(tensor_buf) == 0) return;
-  const string& tensor_name = buffer_tensor_map_[tensor_buf];
-  auto &cv_mu = tensor_swap_params_map_[tensor_name].cv_mu;
-  cv_mu.first->notify_one();
+void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
+  if (buffer_tensor_map_.count(tensor_buffer) == 0) return;
+  const string& tensor_name = buffer_tensor_map_[tensor_buffer];
+  auto& swap_params = tensor_swap_params_map_[tensor_name];
+  auto& cv_mu = swap_params.cv_mu;
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  if (swap_params.then_deallocate) {
+    DeallocateRaw(tensor_buffer->data());
+    tensor_buffer->set_data(nullptr);
+    swap_params.data_ready = SwapStatus::OUT;
+    swap_params.then_deallocate = false;
+  }
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/tmp/swap_policy.txt";
+  std::string swap_policy_file = "/tmp/daihulin/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(FATAL) << "open " << swap_policy_file << " failed.";
@@ -183,9 +191,16 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   void* src_ptr = (void*)(tensor_buffer->data());
   int64 total_bytes = RequestedSize(src_ptr);
-  static float fraction = std::stof(GetEnv("OUT_FRACTION"));
+  std::string fraction_str = GetEnv("OUT_FRACTION");
+  static float fraction = (fraction_str.empty() ? 0 : std::stof(fraction_str));
   int64 gpu_part_size = total_bytes * fraction;
   int64 cpu_part_size = total_bytes - gpu_part_size;;
+
+  if (cpu_part_size <= 0) {
+    std::lock_guard<std::mutex> l(*(cv_mu.second));
+    swap_params.data_ready = SwapStatus::IN;
+    return;
+  }
 
   Device* device = swap_params.device;
   DeviceContext* device_context = swap_params.device_context;
@@ -200,7 +215,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   }
 
   void* gpu_part_dst_ptr = nullptr;
-  if (cpu_part_size > 0 && gpu_part_size > 0) {
+  if (gpu_part_size > 0) {
     gpu_part_dst_ptr = AllocateRaw(0, gpu_part_size);
     auto device_to_device_stream = 
       static_cast<const GPUDeviceContext*>(device_context)->device_to_device_stream();
@@ -234,12 +249,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   }
   swap_params.swapped_gpu_buffer = std::make_pair(gpu_part_dst_ptr, gpu_part_size);
 
-  if (cpu_part_size <= 0) {
-      std::lock_guard<std::mutex> l(*(cv_mu.second));
-      swap_params.data_ready = SwapStatus::IN;
-      return;
-  }
-
   static Allocator* cuda_host_allocator = ProcessState::singleton()->GetCUDAHostAllocator(0);
   void* cpu_part_dst_ptr = cuda_host_allocator->AllocateRaw(0, cpu_part_size);
   if (cpu_part_dst_ptr == nullptr) {
@@ -270,6 +279,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
       [this, send_device_to_host_stream, tensor_buffer, gpu_part_dst_ptr, cpu_part_dst_ptr, &swap_params]() {
         if (!send_device_to_host_stream->ok()) {
           LOG(FATAL) << "GPU->CPU Memcpy failed";
+          std::lock_guard<std::mutex> l(*(swap_params.cv_mu.second));
           swap_params.data_ready = SwapStatus::IN;
           tensor_buffer->Unref();
           return;
@@ -279,12 +289,13 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
         std::unique_lock<std::mutex> lk(*(cv_mu.second));
         // NOTE: assume gpu->gpu part is completed first than gpu->cpu part.
         if (swap_params.can_deallocate_after_swap_out) {
-          cv_mu.first->wait(lk, [tensor_buffer]() { 
-            return tensor_buffer->UsingCount() == 0; 
-          });
-          swap_params.data_ready = SwapStatus::OUT;
-          DeallocateRaw(tensor_buffer->data());
-          tensor_buffer->set_data(nullptr);
+          if (tensor_buffer->UsingCount() == 0) {
+            swap_params.data_ready = SwapStatus::OUT;
+            DeallocateRaw(tensor_buffer->data());
+            tensor_buffer->set_data(nullptr);
+          } else {
+            swap_params.then_deallocate = true;
+          }
         } else {
           DeallocateRaw(gpu_part_dst_ptr);
           cuda_host_allocator->DeallocateRaw(cpu_part_dst_ptr);
@@ -292,7 +303,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
           swap_params.can_deallocate_after_swap_out = true;
         }
         cv_mu.first->notify_all();
-        lk.unlock();
       });
   swap_params.swapped_cpu_buffer = std::make_pair(cpu_part_dst_ptr, cpu_part_size);
 }
@@ -382,6 +392,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
       [recv_host_to_device_stream, dst_ptr, cpu_part_src_ptr, &swap_params]() {
         if (!recv_host_to_device_stream->ok()) {
           LOG(FATAL) << "GPU->CPU Memcpy failed";
+          std::lock_guard<std::mutex> l(*(swap_params.cv_mu.second));
           swap_params.data_ready = SwapStatus::OUT;
           return;
         }

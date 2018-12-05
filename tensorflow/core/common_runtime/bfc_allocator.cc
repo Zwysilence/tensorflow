@@ -385,6 +385,9 @@ void BFCAllocator::DeallocateRawInternal(void* ptr) {
 
   // Find the chunk from the ptr.
   BFCAllocator::ChunkHandle h = region_manager_.get_handle(ptr);
+  if (h == kInvalidChunkHandle) {
+    printf("%p\n", ptr);
+  }
   CHECK(h != kInvalidChunkHandle);
 
   // Consider coalescing it.
