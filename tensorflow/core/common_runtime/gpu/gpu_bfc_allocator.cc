@@ -193,8 +193,15 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   int64 total_bytes = RequestedSize(src_ptr);
   std::string fraction_str = GetEnv("OUT_FRACTION");
   static float fraction = (fraction_str.empty() ? 0 : std::stof(fraction_str));
-  int64 gpu_part_size = total_bytes * fraction;
-  int64 cpu_part_size = total_bytes - gpu_part_size;;
+
+  int64 gpu_part_size, cpu_part_size;
+  if (fraction_str.empty() || fraction_str == "0") {
+    gpu_part_size = 0;
+    cpu_part_size = total_bytes;
+  } else {
+    gpu_part_size = total_bytes * fraction;
+    cpu_part_size = total_bytes - gpu_part_size;
+  }
 
   if (cpu_part_size <= 0) {
     std::lock_guard<std::mutex> l(*(cv_mu.second));
@@ -284,7 +291,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
           tensor_buffer->Unref();
           return;
         }
-        tensor_buffer->Unref();
         auto &cv_mu = swap_params.cv_mu;
         std::unique_lock<std::mutex> lk(*(cv_mu.second));
         // NOTE: assume gpu->gpu part is completed first than gpu->cpu part.
@@ -303,6 +309,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
           swap_params.can_deallocate_after_swap_out = true;
         }
         cv_mu.first->notify_all();
+        tensor_buffer->Unref();
       });
   swap_params.swapped_cpu_buffer = std::make_pair(cpu_part_dst_ptr, cpu_part_size);
 }
