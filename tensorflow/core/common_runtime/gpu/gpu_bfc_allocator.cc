@@ -77,7 +77,7 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
     auto &swap_params = tensor_swap_params_map_[tensor_name];
     auto &cv_mu = swap_params.cv_mu;
     std::unique_lock<std::mutex> l(*(cv_mu.second));
-    int* ready = &(swap_params.data_ready);
+    volatile int* ready = &(swap_params.data_ready);
     cv_mu.first->wait(l, [ready]() { return *ready == SwapStatus::IN; });
     l.unlock();
   }
@@ -125,7 +125,7 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
   auto& swap_params = tensor_swap_params_map_[tensor_name];
   auto& cv_mu = swap_params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
-  if (swap_params.then_deallocate) {
+  if (swap_params.can_deallocate_after_swap_out && swap_params.then_deallocate) {
     DeallocateRaw(tensor_buffer->data());
     tensor_buffer->set_data(nullptr);
     swap_params.data_ready = SwapStatus::OUT;
@@ -197,10 +197,10 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   auto &cv_mu = swap_params.cv_mu;
   {
     std::lock_guard<std::mutex> l(*(cv_mu.second));
-    int *ready = &(swap_params.data_ready);
-    if (*ready != SwapStatus::IN)
+    int ready = swap_params.data_ready;
+    if (ready != SwapStatus::IN)
       return;
-    *ready = SwapStatus::SWAPPING_OUT;
+    swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
@@ -265,6 +265,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
       [this, tensor_buffer, gpu_part_dst_ptr, cpu_part_dst_ptr, &swap_params] {
         auto &cv_mu = swap_params.cv_mu;
         std::unique_lock<std::mutex> lk(*(cv_mu.second));
+        if (cpu_part_dst_ptr != swap_params.swapped_cpu_buffer.first)
+          return;
         // NOTE: assume gpu->gpu part is completed first than gpu->cpu part.
         if (swap_params.can_deallocate_after_swap_out) {
           if (tensor_buffer->UsingCount() == 0) {
@@ -288,18 +290,21 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 }
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
+  std::lock_guard<std::mutex> l(lock_);
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
   {
     std::unique_lock<std::mutex> l(*(cv_mu.second));
-    int *ready = &(swap_params.data_ready);
-    if (*ready != SwapStatus::OUT) {
-      if (*ready == SwapStatus::SWAPPING_OUT)
+    int ready = swap_params.data_ready;
+    if (ready != SwapStatus::OUT) {
+      if (ready == SwapStatus::SWAPPING_OUT) {
+        swap_params.data_ready = SwapStatus::IN;
         swap_params.can_deallocate_after_swap_out = false;
+      }
       return;
     }
-    *ready = SwapStatus::SWAPPING_IN;
+    swap_params.data_ready = SwapStatus::SWAPPING_IN;
   }
 
   void* gpu_part_src_ptr = swap_params.swapped_gpu_buffer.first;

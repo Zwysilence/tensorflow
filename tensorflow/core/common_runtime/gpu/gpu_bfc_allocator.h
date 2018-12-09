@@ -100,7 +100,7 @@ class GPUBFCAllocator : public BFCAllocator {
     std::pair<void*, int64> swapped_cpu_buffer; // set if buffer swapped out
     std::pair<void*, int64> swapped_gpu_buffer; // set if buffer swapped out
     condition_variable_and_mutex cv_mu;
-    int data_ready; // false if buffer swapped out
+    volatile int data_ready; // false if buffer swapped out
     bool can_deallocate_after_swap_out;
     bool then_deallocate;
   };
