@@ -209,15 +209,15 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   std::string fraction_str = GetEnv("OUT_FRACTION");
   static float fraction = (fraction_str.empty() ? 0 : std::stof(fraction_str));
   int64 gpu_part_size, cpu_part_size;
-  if (fraction_str.empty() || fraction_str == "0") {
-    gpu_part_size = 0;
-    cpu_part_size = total_bytes;
-  } else if (fraction_str == "1") {
+  if (fraction_str == "0") {
     gpu_part_size = total_bytes;
     cpu_part_size = 0;
+  } else if (fraction_str.empty() || fraction_str == "1") {
+    gpu_part_size = 0;
+    cpu_part_size = total_bytes;
   } else {
-    gpu_part_size = total_bytes * fraction;
-    cpu_part_size = total_bytes - gpu_part_size;
+    cpu_part_size = total_bytes * fraction;
+    gpu_part_size = total_bytes - gpu_part_size;
   }
 
   if (cpu_part_size <= 0) {
