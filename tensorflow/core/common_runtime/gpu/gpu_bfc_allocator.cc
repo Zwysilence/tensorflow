@@ -50,6 +50,8 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
+const int64 kCopyThreshold = 100 << 20;    // 100M
+
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
 cudaStream_t GPUBFCAllocator::host_to_device_stream_;
 cudaStream_t GPUBFCAllocator::device_to_host_stream_;
@@ -78,6 +80,10 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
     auto &cv_mu = swap_params.cv_mu;
     std::unique_lock<std::mutex> l(*(cv_mu.second));
     volatile int* ready = &(swap_params.data_ready);
+    static bool partial_swap = (GetEnv("PARTIAL_SWAP") == "true" ? true : false);
+    if (partial_swap && *ready != SwapStatus::IN) {
+      swap_params.out_fraction *= 0.8;
+    }
     cv_mu.first->wait(l, [ready]() { return *ready == SwapStatus::IN; });
     l.unlock();
   }
@@ -151,6 +157,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     auto& swap_params = tensor_swap_params_map_[out_tensor_name];
     swap_params.tensor_name = out_tensor_name;
     swap_params.cv_mu = std::make_pair(std::make_shared<std::condition_variable>(), std::make_shared<std::mutex>());
+    swap_params.out_fraction = 1.0f;
 
     auto& swap_out_trigger = swap_triggers_[out_tensor_name];
     swap_out_trigger.tensor_name = out_tensor_name;
@@ -204,23 +211,22 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   }
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
+  float out_fraction = swap_params.out_fraction;
   void* src_ptr = (void*)(tensor_buffer->data());
   int64 total_bytes = RequestedSize(src_ptr);
-  std::string fraction_str = GetEnv("OUT_FRACTION");
-  static float fraction = (fraction_str.empty() ? 0 : std::stof(fraction_str));
   int64 gpu_part_size, cpu_part_size;
-  if (fraction_str == "0") {
+  if (fabs(out_fraction) < 1e-6) {
     gpu_part_size = total_bytes;
     cpu_part_size = 0;
-  } else if (fraction_str.empty() || fraction_str == "1") {
+  } else if (fabs(out_fraction - 1.0f) < 1e-6) {
     gpu_part_size = 0;
     cpu_part_size = total_bytes;
   } else {
-    cpu_part_size = total_bytes * fraction;
-    gpu_part_size = total_bytes - gpu_part_size;
+    cpu_part_size = int(total_bytes * out_fraction) / 4 * 4;
+    gpu_part_size = total_bytes - cpu_part_size;
   }
 
-  if (cpu_part_size <= 0) {
+  if (cpu_part_size < kCopyThreshold) {
     std::lock_guard<std::mutex> l(*(cv_mu.second));
     swap_params.data_ready = SwapStatus::IN;
     return;
@@ -299,7 +305,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     int ready = swap_params.data_ready;
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
-        swap_params.data_ready = SwapStatus::IN;
+        //swap_params.data_ready = SwapStatus::IN;
         swap_params.can_deallocate_after_swap_out = false;
       }
       return;

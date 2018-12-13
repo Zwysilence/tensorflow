@@ -103,6 +103,7 @@ class GPUBFCAllocator : public BFCAllocator {
     volatile int data_ready; // false if buffer swapped out
     bool can_deallocate_after_swap_out;
     bool then_deallocate;
+    float out_fraction;
   };
 
   struct TriggerInfo {
