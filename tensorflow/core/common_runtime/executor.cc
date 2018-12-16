@@ -63,7 +63,17 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
 
+
+std::string GetEnv(const std::string& env_name)
+{
+  const char* env = std::getenv(env_name.c_str());
+  if (env == nullptr) return "";
+  return env;
+}
 //std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out);
+static std::fstream tensor_access_fout;
+
+
 
 namespace tensorflow {
 namespace {
@@ -1320,7 +1330,7 @@ class ExecutorState {
     return input_frame->GetIteration(input_iter)->input_tensors;
   }
 
-  void RecordTensorsAccess(const TensorValueVec* inputs);
+  void RecordTensorsAccess(const TensorValueVec* inputs, bool stats_flag);
 
   void RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx);
 
@@ -1335,15 +1345,33 @@ void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
   }
 }
 
-void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs) {
+
+void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs, bool stats_flag) {
   uint64 time_ = Env::Default()->NowMicros();
+  static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
+  if (log_tensor_access)
+    tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
+  /* static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
+  if (log_tensor_access)
+    static std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out); */
+
   for(auto &tensor_val : *inputs) {
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
     tensor->RecordTensorAccess(tensor_val.name, time_);
-    //if (step_id_ == 20 && tensor->AllocatorName() == "GPU_0_bfc") {
-    //  tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
-    //}
+    if (log_tensor_access) {
+      if (!tensor_access_fout.is_open()) {
+        LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
+        break;
+      }
+      // TODO: replace the step_id_ to whether there is a stat
+      if (stats_flag && tensor->AllocatorName() == "GPU_0_bfc") {
+        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      }
+      /* if (step_id_ == 10 && tensor->AllocatorName() == "GPU_0_bfc") {
+        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      } */
+    }
   }
 }
 
@@ -1623,8 +1651,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
 
     params.track_allocations = false;
     stats = nullptr;
+    bool stats_flag = false;
     if (stats_collector_ && !tagged_node.is_dead) {
       // track allocations if and only if we are collecting statistics
+      stats_flag = true;
       params.track_allocations = true;
       stats = new NodeExecStatsWrapper;
       stats->stats()->set_node_name(node->name());
@@ -1655,7 +1685,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
       IncrementUsingCountOfTensors(&inputs);
-      RecordTensorsAccess(&inputs);
+      RecordTensorsAccess(&inputs, stats_flag);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
