@@ -76,6 +76,78 @@ class GPUBFCAllocator : public BFCAllocator {
     SWAPPING_OUT
   };
 
+
+  inline void MergeChunks(BFCAllocator::ChunkHandle h1, BFCAllocator::ChunkHandle h2) {
+    CHECK(h1 != kInvalidChunkHandle && h2 != kInvalidChunkHandle);
+    BFCAllocator::Chunk* c1 = ChunkFromHandle(h1);
+    BFCAllocator::Chunk* c2 = ChunkFromHandle(h2);
+    //CHECK(!c2->in_use());
+
+    BFCAllocator::ChunkHandle h3 = c2->next;
+    c1->next = h3;
+    CHECK(c2->prev == h1);
+    if (h3 != kInvalidChunkHandle) {
+      BFCAllocator::Chunk* c3 = ChunkFromHandle(h3);
+      c3->prev = h1;
+    }
+
+    // Set new size
+    c1->size += c2->size;
+
+    DeleteChunk(h2);
+  }
+
+  inline void MergeBuffers(const void* ptr1, const void* ptr2) {
+    BFCAllocator::ChunkHandle h1 = region_manager_.get_handle(ptr1);
+    BFCAllocator::ChunkHandle h2 = region_manager_.get_handle(ptr2);
+    CHECK(h1 != kInvalidChunkHandle && h2 != kInvalidChunkHandle);
+    MergeChunks(h1, h2);
+  }
+
+  inline void SplitBuffer(const void* ptr, size_t num_bytes) {
+    BFCAllocator::ChunkHandle h = region_manager_.get_handle(ptr);
+    CHECK(h != kInvalidChunkHandle)
+        << "Asked for SplitChunk of pointer we never allocated: " << ptr;
+    BFCAllocator::Chunk* c = ChunkFromHandle(h);
+    size_t rounded_bytes = RoundedBytes(num_bytes);
+    CHECK(c->requested_size > num_bytes)
+        << "Rounded bytes of the split number of bytes is largger than requested size of pointer: " << ptr;
+    SplitChunkInUse(h, rounded_bytes);
+  }
+
+  void SplitChunkInUse(BFCAllocator::ChunkHandle h, size_t num_bytes) {
+    ChunkHandle h_new_chunk = AllocateChunk();
+    Chunk* c = ChunkFromHandle(h);
+    CHECK(c->in_use() && (c->bin_num == kInvalidBinNum));
+
+    // Create a new chunk starting num_bytes after c
+    BFCAllocator::Chunk* new_chunk = ChunkFromHandle(h_new_chunk);
+    new_chunk->ptr = static_cast<void*>(static_cast<char*>(c->ptr) + num_bytes);
+    region_manager_.set_handle(new_chunk->ptr, h_new_chunk);
+
+    // Set the new sizes of the chunks.
+    new_chunk->size = c->size - num_bytes;
+    c->size = num_bytes;
+
+    // The new chunk is not in use.
+    new_chunk->allocation_id = -1;
+
+    // Maintain the pointers.
+    // c <-> c_neighbor becomes
+    // c <-> new_chunk <-> c_neighbor
+    BFCAllocator::ChunkHandle h_neighbor = c->next;
+    new_chunk->prev = h;
+    new_chunk->next = h_neighbor;
+    c->next = h_new_chunk;
+    if (h_neighbor != kInvalidChunkHandle) {
+      Chunk* c_neighbor = ChunkFromHandle(h_neighbor);
+      c_neighbor->prev = h_new_chunk;
+    }
+
+    // Add the newly free chunk to the free bin.
+    InsertFreeChunkIntoBin(h_new_chunk);
+  }
+
   void SwapIn(const string& tensor_name);
 
   inline void SwapOut(const string& tensor_name) {
@@ -132,6 +204,8 @@ class GPUBFCAllocator : public BFCAllocator {
   static cudaStream_t host_to_device_stream_;
 
   static cudaStream_t device_to_host_stream_;
+
+  static cudaEvent_t cuda_event_;
 
   static void CUDART_CB CudaCallback(cudaStream_t stream, cudaError_t status, void* done) {
     auto func = static_cast<std::function<void()>* >(done);
