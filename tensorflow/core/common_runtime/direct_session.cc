@@ -693,6 +693,44 @@ Status DirectSession::Run(const RunOptions& run_options,
 
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
+    static int graph_id_ = 0;
+    std::string graph_dir = "/home/uniquesc/v-xuapen/tf_static_graph/";
+    for (auto& item : executors_and_keys->items) {
+      graph_id_++;
+      std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
+      std::string graph_fanin_filename = graph_dir + std::to_string(graph_id_) + "_innodes.txt";
+      std::fstream fout_out(graph_fanout_filename, fout_out.out);
+      std::fstream fout_in(graph_fanin_filename, fout_in.out);
+      if (!(fout_out.is_open() && fout_in.is_open())) {
+        LOG(ERROR) << "Failed to open graph file!";
+        break;
+      }
+      
+      for (Node* node : item.graph->nodes()) {
+        // Write the fanouts of node
+        fout_out << node->name() << "\t";
+        for (auto it : node->out_nodes()) {
+          fout_out << it->name() << "\t";
+        }
+        fout_out << "\n";
+
+        // Write the fanin of node
+        fout_in << "SrcNode\t" << node->name() << "\t";
+        int fanin_num = 0;
+        for (auto it : node->in_edges()) {
+          fanin_num++;
+        }
+        fout_in << fanin_num << "\n";
+        for (auto it : node->in_edges()) {
+          fout_in << "InputNode\t" << it->src()->name() << "\t" << it->src_output() << "\n";
+        }
+      }
+
+      fout_out.close();
+      fout_in.close();
+    }
+  }
+  /* if (do_trace) {
     // Get execution time of nodes that are related with swap nodes
     std::vector<const Node*> swap_out_nodes;
     std::vector<const Node*> swap_in_nodes;
@@ -731,10 +769,10 @@ Status DirectSession::Run(const RunOptions& run_options,
 
           // std::cout << "Size of in edges of swap in node: " << swap_in_node->in_edges().size() << "\n";
           // std::cout << "Size of out edges of swap in node: " << swap_in_node->out_edges().size() << "\n";
-          
+
           auto out_edges_iter2 = swap_in_node->out_edges().begin();
           swap_tensor_to = (*out_edges_iter2)->dst();
-          
+
           auto in_edges_iter2 = swap_in_node->in_edges().begin();
           if ((*in_edges_iter2)->IsControlEdge()) {
             swap_in_trigger = (*in_edges_iter2)->src();
@@ -771,9 +809,9 @@ Status DirectSession::Run(const RunOptions& run_options,
           for (int i = 0; i < dev_stats.node_stats_size(); ++i) {
             auto & node_stats = dev_stats.node_stats(i);
             if (node_stats.node_name() == name) {
-              return &node_stats; 
+              return &node_stats;
             }
-          } 
+          }
         }
         return nullptr;
       };
@@ -791,8 +829,8 @@ Status DirectSession::Run(const RunOptions& run_options,
       // };
 
       // for (int pi = 0; pi < swap_out_nodes.size(); ++pi) {
-      //   std::vector<const Node*> nodes { swap_out_nodes[pi], swap_out_triggers[pi], 
-      //                                    swap_in_nodes[pi], swap_in_triggers[pi], 
+      //   std::vector<const Node*> nodes { swap_out_nodes[pi], swap_out_triggers[pi],
+      //                                    swap_in_nodes[pi], swap_in_triggers[pi],
       //                                    swap_tensor_from_nodes[pi], swap_tensor_to_nodes[pi]};
       //   std::vector<const node_stats_type*> node_stats_v;
       //   for (auto node : nodes) {
@@ -820,7 +858,7 @@ Status DirectSession::Run(const RunOptions& run_options,
       //     for (auto node_stats : node_stats_v) {
       //       print_times(node_to_prefix[node_stats->node_name()], node_stats);
       //     }
-      //     
+      //
       //     std::cout << "\n";
       //   }
       // }
@@ -834,7 +872,7 @@ Status DirectSession::Run(const RunOptions& run_options,
       } else {
         auto write_node_time = [search_for_node_stats, &fout, timestamps_2018_9_1](const string& prefix, const string&name) {
           auto stats = search_for_node_stats(name);
-          fout << prefix << stats->node_name() << "\t" 
+          fout << prefix << stats->node_name() << "\t"
                << stats->all_start_micros() + stats->all_end_rel_micros() - timestamps_2018_9_1 << "\n";
         };
         fout << "This step start at " << start_time << ", end at " << end_time << "\n";
@@ -895,7 +933,7 @@ Status DirectSession::Run(const RunOptions& run_options,
         print_nodes_time = false;
       }
     }
-  }
+  } */
 
   // Receive outputs.
   if (outputs) {

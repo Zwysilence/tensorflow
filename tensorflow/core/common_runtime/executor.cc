@@ -1349,8 +1349,10 @@ void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
 void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs, bool stats_flag) {
   uint64 time_ = Env::Default()->NowMicros();
   static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
-  if (log_tensor_access)
-    tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
+  if (log_tensor_access){
+    if (!tensor_access_fout.is_open())
+      tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
+  }
   /* static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
   if (log_tensor_access)
     static std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out); */
