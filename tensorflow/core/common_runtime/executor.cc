@@ -1366,10 +1366,15 @@ void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs, bool stats
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
         break;
       }
-      // TODO: replace the step_id_ to whether there is a stat
-      if (stats_flag && tensor->AllocatorName() == "GPU_0_bfc") {
-        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      // TODO: replace the step_id_ to whether there is a stat (DONE)
+      // record tensor access allocated from both GPU and CPU as to choose swap_in_trigger
+      if (stats_flag) {
+        // Do not need the requested_size yet
+        tensor_access_fout << tensor_val.name << "\t" /*<< tensor->BufferSize() << "\t"*/ << time_ << "\n";
       }
+      /* if (stats_flag && tensor->AllocatorName() == "GPU_0_bfc") {
+        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      } */
       /* if (step_id_ == 10 && tensor->AllocatorName() == "GPU_0_bfc") {
         tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
       } */
