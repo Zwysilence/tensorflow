@@ -39,6 +39,11 @@ class PoolAllocator;
 class GPUProcessState {
  public:
   static GPUProcessState* singleton();
+  staitc void delete_singleton() {
+    if (instance_){
+      delete instance_;
+    }
+  }
 
   // Query whether any GPU device has been created so far.
   // Disable thread safety analysis since a race is benign here.

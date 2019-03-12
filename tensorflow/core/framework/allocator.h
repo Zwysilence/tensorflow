@@ -29,6 +29,8 @@ limitations under the License.
 
 namespace tensorflow {
 
+class TensorParams;
+class TensorBuffer;
 // Attributes for a single allocation call. Different calls to the same
 // allocator could potentially have different allocation attributes.
 struct AllocationAttributes {
@@ -130,6 +132,12 @@ class Allocator {
       DeallocateRaw(ptr);
     }
   }
+
+  virtual void RecordTensorAccess(const string &tensor_name, uint64 _time) {}
+
+  virtual void RecordSwapContext(const TensorParams &params, TensorBuffer * tensor_buf) {}
+
+  virtual void Notify(TensorBuffer*) {}
 
   // Returns true if this allocator tracks the sizes of allocations.
   // RequestedSize and AllocatedSize must be overridden if

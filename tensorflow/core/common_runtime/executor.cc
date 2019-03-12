@@ -21,6 +21,9 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <fstream>
+#include <thread>
+#include <chrono>
 
 #include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/common_runtime/executor_factory.h"
@@ -61,6 +64,17 @@ limitations under the License.
 #include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
+
+
+std::string GetEnv(const std::string& env_name)
+{
+  const char* env = std::getenv(env_name.c_str());
+  if (env == nullptr) return "";
+  return env;
+}
+//std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out);
+static std::fstream tensor_access_fout;
+
 
 namespace tensorflow {
 namespace {
@@ -853,7 +867,8 @@ class ExecutorState {
           has_value(other.has_value),
           val_field_is_set(other.val_field_is_set),
           alloc_attr(other.alloc_attr),
-          device_context(other.device_context) {
+          device_context(other.device_context),
+          tensor_name(other.tensor_name) {
       if (val_field_is_set) {
         val.Init(*other.val);
       }
@@ -872,6 +887,7 @@ class ExecutorState {
       val_field_is_set = other.val_field_is_set;
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
+      tensor_name = other.tensor_name;
       if (val_field_is_set) {
         val.Init(*other.val);
       }
@@ -888,6 +904,7 @@ class ExecutorState {
       val_field_is_set = other.val_field_is_set;
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
+      tensor_name = other.tensor_name;
       if (val_field_is_set) {
         val.Init(std::move(*other.val));
       }
@@ -897,9 +914,12 @@ class ExecutorState {
     // Clears the <val> field.
     void ClearVal() {
       if (val_field_is_set) {
+        val->DecrementUsingCount();
         val.Destroy();
         val_field_is_set = false;
         has_value = false;
+      } else if (ref) {
+        ref->DecrementUsingCount();
       }
     }
 
@@ -913,6 +933,8 @@ class ExecutorState {
     bool has_value = false;
 
     bool val_field_is_set = false;
+
+    string tensor_name;
 
     // The attributes of the allocator that creates the tensor.
     AllocatorAttributes alloc_attr;
@@ -1347,7 +1369,77 @@ class ExecutorState {
                          int64 input_iter) const NO_THREAD_SAFETY_ANALYSIS {
     return input_frame->GetIteration(input_iter)->input_tensors;
   }
+
+  void RecordTensorsAccess(const TensorValueVec* inputs, bool stats_flag);
+
+  void RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx);
+
+  void IncrementUsingCountOfTensors(const TensorValueVec* inputs);
 };
+
+void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
+  for(auto &tensor_val : *inputs) {
+    auto tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    tensor->IncrementUsingCount();
+  }
+}
+
+
+void ExecutorState::RecordTensorsAccess(const TensorValueVec* inputs, bool stats_flag) {
+  uint64 time_ = Env::Default()->NowMicros();
+  static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
+  if (log_tensor_access){
+    if (!tensor_access_fout.is_open())
+      tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
+  }
+  /* static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
+  if (log_tensor_access)
+    static std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out); */
+
+  for(auto &tensor_val : *inputs) {
+    auto tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    tensor->RecordTensorAccess(tensor_val.name, time_);
+    if (log_tensor_access) {
+      if (!tensor_access_fout.is_open()) {
+        LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
+        break;
+      }
+      // TODO: replace the step_id_ to whether there is a stat (DONE)
+      // record tensor access allocated from both GPU and CPU as to choose swap_in_trigger
+      if (stats_flag) {
+        // Do not need the requested_size yet
+        tensor_access_fout << tensor_val.name << "\t" /*<< tensor->BufferSize() << "\t"*/ << time_ << "\n";
+      }
+      /* if (stats_flag && tensor->AllocatorName() == "GPU_0_bfc") {
+        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      } */
+      /* if (step_id_ == 10 && tensor->AllocatorName() == "GPU_0_bfc") {
+        tensor_access_fout << tensor_val.name << "\t" << tensor->BufferSize()<< "\t" << time_ << "\n";
+      } */
+    }
+  }
+}
+
+void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
+  const string& node_name = item.node->name();
+  Device* device = static_cast<Device*>(ctx->device());
+  DeviceContext* dev_ctx = ctx->op_device_context();
+  for (int i = 0; i < outputs->size(); ++i) {
+    Entry* entry = &((*outputs)[i]);
+    if (!entry->has_value) continue;
+
+    string tensor_name = node_name + "_" + std::to_string(i);
+    entry->tensor_name = tensor_name;
+
+    if (entry->ref) {
+      entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
+    } else {
+      entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
+    }
+  }
+}
 
 ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
     : vlog_(VLOG_IS_ON(1)),
@@ -1610,8 +1702,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
 
     params.track_allocations = false;
     stats = nullptr;
+    bool stats_flag = false;
     if (stats_collector_ && !tagged_node.is_dead) {
       // track allocations if and only if we are collecting statistics
+      stats_flag = true;
       params.track_allocations = true;
       stats = new NodeExecStatsWrapper(node->name());
       nodestats::SetScheduled(stats, scheduled_nsec);
@@ -1641,6 +1735,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       bool is_input_dead = false;
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
+      IncrementUsingCountOfTensors(&inputs);
+      RecordTensorsAccess(&inputs, stats_flag);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
@@ -1677,6 +1773,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           nodestats::SetOpEnd(stats);
           EntryVector outputs;
           Status s = ProcessOutputs(*state->item, &state->ctx, &outputs, stats);
+          RecordSwapContexts(*state->item, &outputs, &state->ctx);
           nodestats::SetMemory(stats, &state->ctx);
           if (vlog_) {
             VLOG(2) << "Async kernel done: " << state->item->node->id()
@@ -1723,6 +1820,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
+        RecordSwapContexts(item, &outputs, &ctx);
         if (s.ok() && impl_->device_record_tensor_accesses_) {
           // Get the list of all tensors accessed during the execution
           ctx.retrieve_accessed_tensors(&accessed_tensors);
@@ -1793,6 +1891,7 @@ Status ExecutorState::PrepareInputs(const NodeItem& item, Entry* first_input,
 
     // i-th input.
     TensorValue* inp = &(*inputs)[i];
+    inp->name = entry->tensor_name;
 
     // Only merge and transfer nodes can have no-value inputs.
     if (!entry->has_value) {

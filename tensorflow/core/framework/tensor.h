@@ -47,6 +47,18 @@ Status CopyElementToSlice(Tensor element, Tensor* parent, int64 index);
 Status MaybeMoveSliceToElement(Tensor* parent, Tensor* element, int64 index);
 }  // namespace batch_util
 
+class Device;
+class DeviceContext;
+
+struct TensorParams
+{
+  string name;
+  Device * device;
+  DeviceContext * device_context;
+  /* data */
+};
+
+
 /// @ingroup core
 /// Represents an n-dimensional array of values.
 class Tensor {
@@ -458,6 +470,22 @@ class Tensor {
   void UnsafeCopyFromInternal(const Tensor&, DataType dtype,
                               const TensorShape&);
 
+  void RecordTensorAccess(const string& tensor_name, uint64 time_);
+
+  string AllocatorName();
+
+  int64 BufferSize();
+
+  void RecordSwapContext(const TensorParams &params);
+
+  void IncrementUsingCount();
+
+  void DecrementUsingCount();
+
+  void SetName(const string& name) { name_ = name; }
+
+  string Name() const { return name_; }
+
  private:
   // Returns true if the refcount on buf_ and any possible underlying root
   // buffer is one.
@@ -475,6 +503,7 @@ class Tensor {
 
   TensorShape shape_;
   TensorBuffer* buf_;
+  string name_;
 
   friend class DMAHelper;
   friend class TensorCApi;
@@ -547,6 +576,7 @@ class TensorBuffer : public core::RefCounted {
 
   // data() points to a memory region of size() bytes.
   virtual void* data() const = 0;
+  virtual void set_data(void *) {};
   virtual size_t size() const = 0;
 
   // If this TensorBuffer is sub-buffer of another TensorBuffer,
@@ -564,6 +594,20 @@ class TensorBuffer : public core::RefCounted {
 
   // Whether this TensorBuffer owns the underlying memory.
   virtual bool OwnsMemory() const { return true; }
+
+  virtual void RecordTensorAccess(const string& tensor_name, uint64 time_) {}
+
+  virtual int64 BufferSize() { return 0; }
+
+  virtual string AllocatorName() { return ""; }
+
+  virtual void RecordSwapContext(const TensorParams &params) {}
+
+  virtual void IncrementUsingCount() {}
+
+  virtual void DecrementUsingCount() {}
+
+  virtual int UsingCount() { return 0; }
 };
 
 template <typename T>

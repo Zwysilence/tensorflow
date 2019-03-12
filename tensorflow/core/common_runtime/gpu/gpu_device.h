@@ -45,6 +45,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session_options.h"
 
+#include "tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h"
+
 namespace tensorflow {
 
 class BaseGPUDevice : public LocalDevice {
@@ -151,6 +153,8 @@ class BaseGPUDevice : public LocalDevice {
   Status MaybeCopyTensorToGPU(const AllocatorAttributes& alloc_attrs,
                               const Tensor& from, Tensor* to,
                               StatusCallback done);
+
+  friend class GPUBFCAllocator;
 };
 
 class BaseGPUDeviceFactory : public DeviceFactory {

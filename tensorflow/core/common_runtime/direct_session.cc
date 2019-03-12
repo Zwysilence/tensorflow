@@ -15,9 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/direct_session.h"
 
+#include <map>
 #include <atomic>
 #include <string>
 #include <vector>
+#include <typeinfo>
+#include <type_traits>
+#include <fstream>
+#include <thread>
+#include <chrono>
 
 #include "tensorflow/core/common_runtime/collective_executor_mgr.h"
 #include "tensorflow/core/common_runtime/collective_param_resolver_local.h"
@@ -732,8 +738,53 @@ Status DirectSession::Run(const RunOptions& run_options,
     LogMemory::RecordStep(step_id, run_state_args.handle);
   }
 
+  auto now_in_usec = []() -> int64 {return Env::Default()->NowMicros(); };
+  int64 start_time = now_in_usec();
+
   TF_RETURN_IF_ERROR(RunInternal(step_id, run_options, &call_frame,
                                  executors_and_keys, run_metadata));
+
+  int64 end_time = now_in_usec();
+
+  const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
+  if (do_trace) {
+    static int graph_id_ = 0;
+    std::string graph_dir = "/home/frog/vfonel/tf_static_graph/";
+    for (auto& item : executors_and_keys->items) {
+      graph_id_++;
+      std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
+      std::string graph_fanin_filename = graph_dir + std::to_string(graph_id_) + "_innodes.txt";
+      std::fstream fout_out(graph_fanout_filename, fout_out.out);
+      std::fstream fout_in(graph_fanin_filename, fout_in.out);
+      if (!(fout_out.is_open() && fout_in.is_open())) {
+        LOG(ERROR) << "Failed to open graph file!";
+        break;
+      }
+      
+      for (Node* node : item.graph->nodes()) {
+        // Write the fanouts of node
+        fout_out << node->name() << "\t";
+        for (auto it : node->out_nodes()) {
+          fout_out << it->name() << "\t";
+        }
+        fout_out << "\n";
+
+        // Write the fanin of node
+        fout_in << "SrcNode\t" << node->name() << "\t";
+        int fanin_num = 0;
+        for (auto it : node->in_edges()) {
+          fanin_num++;
+        }
+        fout_in << fanin_num << "\n";
+        for (auto it : node->in_edges()) {
+          fout_in << "InputNode\t" << it->src()->name() << "\t" << it->src_output() << "\n";
+        }
+      }
+
+      fout_out.close();
+      fout_in.close();
+    }
+  }
 
   // Receive outputs.
   if (outputs) {
