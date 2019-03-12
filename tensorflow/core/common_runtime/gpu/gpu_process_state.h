@@ -39,7 +39,7 @@ class PoolAllocator;
 class GPUProcessState {
  public:
   static GPUProcessState* singleton();
-  staitc void delete_singleton() {
+  static void delete_singleton() {
     if (instance_){
       delete instance_;
     }

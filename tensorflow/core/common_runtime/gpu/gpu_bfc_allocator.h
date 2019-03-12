@@ -40,6 +40,8 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #include "tensorflow/core/common_runtime/device.h"
 
+namespace gpu = ::perftools::gputools;
+
 namespace tensorflow {
 
 class TensorParams;
