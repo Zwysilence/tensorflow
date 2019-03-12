@@ -37,6 +37,11 @@ class PoolAllocator;
 class ProcessState {
  public:
   static ProcessState* singleton();
+  static void delete_singleton() {
+    if (instance_) {
+      delete instance_;
+    }
+  }
 
   // Descriptor for memory allocation attributes, used by optional
   // runtime correctness analysis logic.

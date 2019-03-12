@@ -45,6 +45,11 @@ limitations under the License.
 #include "tensorflow/core/platform/tensor_coding.h"
 #include "tensorflow/core/platform/types.h"
 
+#include <string>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+
 namespace tensorflow {
 namespace {
 
@@ -90,11 +95,52 @@ class Buffer : public BufferBase {
   Buffer(Allocator* a, int64 n, const AllocationAttributes& allocation_attr);
 
   void* data() const override { return data_; }
+  void set_data(void * data) override { data_ = (T*)data; }
   size_t size() const override { return sizeof(T) * elem_; }
+
+  void RecordTensorAccess(const string & tensor_name, const uint64 time_) {
+    //if (alloc_ == nullptr) return;
+    alloc_->RecordTensorAccess(tensor_name, time_);
+  }
+
+  void RecordSwapContext(const TensorParams &params) {
+    //if (alloc_ == nullptr) return;
+    alloc_->RecordSwapContext(params, this);
+    //alloc_->RecordSwapContext(params);
+  }
+
+  void IncrementUsingCount() {
+    using_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void DecrementUsingCount() {
+    DCHECK_GT(using_count_.load(), 0);
+    int pre_val = using_count_.fetch_sub(1);
+    if (pre_val == 1)
+      NotifyAllocator();
+  }
+
+  int UsingCount() {
+    auto cnt = using_count_.load();
+    return cnt;
+  }
+
+  void NotifyAllocator() {
+    alloc_->Notify(this);
+  }
+
+  int64 BufferSize() {
+    return alloc_->AllocatedSize((void*)data_);
+  }
+
+  string AllocatorName() {
+    return alloc_->Name();
+  }
 
  private:
   T* data_;
   int64 elem_;
+  std::atomic_int_fast32_t using_count_;
 
   ~Buffer() override;
 
@@ -361,12 +407,12 @@ struct ProtoHelper<Eigen::half> {
 
 template <typename T>
 Buffer<T>::Buffer(Allocator* a, int64 n)
-    : BufferBase(a), data_(a->Allocate<T>(n)), elem_(n) {}
+    : BufferBase(a), data_(a->Allocate<T>(n)), elem_(n), using_count_(0) {}
 
 template <typename T>
 Buffer<T>::Buffer(Allocator* a, int64 n,
                   const AllocationAttributes& allocation_attr)
-    : BufferBase(a), data_(a->Allocate<T>(n, allocation_attr)), elem_(n) {}
+    : BufferBase(a), data_(a->Allocate<T>(n, allocation_attr)), elem_(n), using_count_(0) {}
 
 template <typename T>
 Buffer<T>::~Buffer() {
@@ -495,6 +541,36 @@ void Tensor::CheckIsAlignedAndSingleElement() const {
 
 Tensor::~Tensor() { UnrefIfNonNull(buf_); }
 
+void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
+  if (buf_ == nullptr) return;
+  buf_->RecordTensorAccess(tensor_name, time_);
+}
+
+string Tensor::AllocatorName() {
+  if (buf_ == nullptr) return "";
+  return buf_->AllocatorName();
+}
+
+int64 Tensor::BufferSize() {
+  if (buf_ == nullptr) return 0;
+  return buf_->BufferSize();
+}
+
+void Tensor::RecordSwapContext(const TensorParams &params) {
+  if (buf_ == nullptr) return;
+  buf_->RecordSwapContext(params);
+}
+
+void Tensor::IncrementUsingCount() {
+  if (buf_ == nullptr) return;
+  buf_->IncrementUsingCount();
+}
+
+void Tensor::DecrementUsingCount() {
+  if (buf_ == nullptr) return;
+  buf_->DecrementUsingCount();
+}
+
 void Tensor::CopyFromInternal(const Tensor& other, const TensorShape& shape) {
   CHECK_EQ(shape.num_elements(), other.NumElements());
   // Data type will be overwritten if this == &other, since dtype is part of
@@ -617,6 +693,7 @@ class SubBuffer : public TensorBuffer {
   }
 
   void* data() const override { return data_; }
+  void set_data(void* data) override { data_ = (T*)data; }
   size_t size() const override { return sizeof(T) * elem_; }
   TensorBuffer* root_buffer() override { return root_; }
   void FillAllocationDescription(AllocationDescription* proto) const override {

@@ -19,6 +19,7 @@ limitations under the License.
 #include <functional>
 
 #include <vector>
+#include <string>
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/control_flow.h"
@@ -451,6 +452,7 @@ struct TensorValue {
 
   mutex* mutex_if_ref;  // nullptr if not a ref, != nullptr if a ref
   Tensor* tensor;
+  string name;
 };
 
 class OpKernelContext {

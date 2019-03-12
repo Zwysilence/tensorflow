@@ -15,9 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/direct_session.h"
 
+#include <map>
 #include <atomic>
 #include <string>
 #include <vector>
+#include <typeinfo>
+#include <type_traits>
+#include <fstream>
+#include <thread>
+#include <chrono>
 
 #include "tensorflow/core/common_runtime/constant_folding.h"
 #include "tensorflow/core/common_runtime/debugger_state_interface.h"
@@ -408,6 +414,10 @@ Status DirectSession::Run(const RunOptions& run_options,
       GetOrCreateExecutors(pool, input_tensor_names, output_names, target_nodes,
                            &executors_and_keys, &run_state_args));
 
+  // TODO: add time counter here
+  auto now_in_usec = []() -> int64 { return Env::Default()->NowMicros(); };
+  int64 start_time = now_in_usec();
+
   // Create a run state and start execution.
   Executor::Args args;
   args.step_id = step_id_counter_.fetch_add(1);
@@ -553,6 +563,48 @@ Status DirectSession::Run(const RunOptions& run_options,
          executors_and_keys->items) {
       GraphDef* partition_graph_def = parition_graph_defs->Add();
       exec_and_lib.graph->ToGraphDef(partition_graph_def);
+    }
+  }
+
+  int64 end_time = now_in_usec();
+
+  const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
+  if (do_trace) {
+    static int graph_id_ = 0;
+    std::string graph_dir = "/home/uniquesc/v-xuapen/tf_static_graph/";
+    for (auto& item : executors_and_keys->items) {
+      graph_id_++;
+      std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
+      std::string graph_fanin_filename = graph_dir + std::to_string(graph_id_) + "_innodes.txt";
+      std::fstream fout_out(graph_fanout_filename, fout_out.out);
+      std::fstream fout_in(graph_fanin_filename, fout_in.out);
+      if (!(fout_out.is_open() && fout_in.is_open())) {
+        LOG(ERROR) << "Failed to open graph file!";
+        break;
+      }
+      
+      for (Node* node : item.graph->nodes()) {
+        // Write the fanouts of node
+        fout_out << node->name() << "\t";
+        for (auto it : node->out_nodes()) {
+          fout_out << it->name() << "\t";
+        }
+        fout_out << "\n";
+
+        // Write the fanin of node
+        fout_in << "SrcNode\t" << node->name() << "\t";
+        int fanin_num = 0;
+        for (auto it : node->in_edges()) {
+          fanin_num++;
+        }
+        fout_in << fanin_num << "\n";
+        for (auto it : node->in_edges()) {
+          fout_in << "InputNode\t" << it->src()->name() << "\t" << it->src_output() << "\n";
+        }
+      }
+
+      fout_out.close();
+      fout_in.close();
     }
   }
 

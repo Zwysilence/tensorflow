@@ -36,6 +36,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session_options.h"
 
+#include "tensorflow/core/common_runtime/gpu/gpu_bfc_allocator.h"
+
 namespace tensorflow {
 
 class BaseGPUDevice : public LocalDevice {
@@ -113,6 +115,8 @@ class BaseGPUDevice : public LocalDevice {
 
   void ReinitializeDevice(OpKernelContext* context, PerOpGpuDevice* device,
                           int stream_id, Allocator* allocator);
+
+  friend class GPUBFCAllocator;
 };
 
 class BaseGPUDeviceFactory : public DeviceFactory {

@@ -33,6 +33,8 @@ limitations under the License.
 
 namespace tensorflow {
 
+class GPUBFCAllocator;
+
 // A memory allocator that implements a 'best-fit with coalescing'
 // algorithm.  This is essentially a very simple version of Doug Lea's
 // malloc (dlmalloc).
@@ -42,6 +44,7 @@ namespace tensorflow {
 // allocator owns pretty much all of the memory, and that nearly
 // all requests to allocate memory go through this interface.
 class BFCAllocator : public VisitableAllocator {
+  friend GPUBFCAllocator;
  public:
   // Takes ownership of sub_allocator.
   BFCAllocator(SubAllocator* sub_allocator, size_t total_memory,
