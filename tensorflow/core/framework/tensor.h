@@ -470,6 +470,8 @@ class Tensor {
 
   string AllocatorName();
 
+  Allocator* GetAllocator();
+
   int64 BufferSize();
 
   void RecordSwapContext(const TensorParams &params);
@@ -479,6 +481,14 @@ class Tensor {
   void DecrementUsingCount();
 
   void SetName(const string& name) { name_ = name; }
+
+  void* data();
+
+  void set_data(void* dt);
+
+  TensorBuffer* buffer() {
+    return buf_;
+  }
 
   string Name() const { return name_; }
  private:
@@ -589,6 +599,8 @@ class TensorBuffer : public core::RefCounted {
   virtual int64 BufferSize() { return 0; }
 
   virtual string AllocatorName() { return ""; }
+
+  virtual Allocator* GetAllocator() { return nullptr; }
 
   virtual void RecordSwapContext(const TensorParams &params) {}
 

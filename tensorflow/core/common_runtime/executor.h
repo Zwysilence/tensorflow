@@ -25,8 +25,66 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
+#include <unordered_map>
+#include <unordered_set>
 
 namespace tensorflow {
+
+class RecomputeContextManager {
+ public:
+  struct RecomputeContext {
+    const std::unordered_set<const Node*>* recompute_nodes;
+    const Node* target_node;
+    const int output_slot;
+    std::function<void()> done;
+    RecomputeContext(const std::unordered_set<const Node*>* rn, const Node* tn, const int out_slot, std::function<void()> done_)
+       : recompute_nodes(rn), target_node(tn), output_slot(out_slot), done(done_) {}
+    RecomputeContext() : recompute_nodes(nullptr), target_node(nullptr), output_slot(0) {}
+  };
+
+  typedef size_t RecomputeHandle;
+
+  static RecomputeContextManager* GlobalRecomputeContextManager() {
+    static RecomputeContextManager* rcm = new RecomputeContextManager;
+    return rcm;
+  }
+
+  RecomputeContext GetRecomputeContext(RecomputeHandle h) {
+    if (h == -1)
+      return RecomputeContext();
+    DCHECK_LT(h, next_handle_);
+    return contexts_[h];
+  }
+
+  RecomputeHandle SetRecomputeContext(const std::unordered_set<const Node*>& recompute_nodes, 
+                                      const Node* target_node, const string target_tensor, std::function<void()> done) {
+    int slot = 0;
+    auto pos = target_tensor.find(':');
+    if (pos != std::string::npos) {
+      slot = std::stoi(target_tensor.substr(pos+1));
+    }
+    return SetRecomputeContext(recompute_nodes, target_node, slot, done);
+  }
+
+  RecomputeHandle SetRecomputeContext(const std::unordered_set<const Node*>& recompute_nodes, 
+                                      const Node* target_node, const int out_slot, std::function<void()> done) {
+    RecomputeHandle h = next_handle_++;
+    // allocate memory for context
+    contexts_.emplace_back(new std::unordered_set<const Node*>(recompute_nodes), target_node, out_slot, done);
+    return h;
+  }
+
+  ~RecomputeContextManager() {
+    for (auto& ctx : contexts_) {
+      delete ctx.recompute_nodes;
+    }
+  }
+ private:
+  RecomputeContextManager() {}
+  RecomputeHandle next_handle_ = 0;
+  // index by handle
+  std::vector<RecomputeContext> contexts_;
+};
 
 class StepStatsCollector;
 

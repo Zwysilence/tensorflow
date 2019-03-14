@@ -2265,6 +2265,7 @@ CORE_CPU_LIB_HEADERS = CORE_CPU_BASE_HDRS + [
     "common_runtime/dma_helper.h",
     "common_runtime/eigen_thread_pool.h",
     "common_runtime/executor.h",
+    "common_runtime/recompute.h",
     "common_runtime/graph_optimizer.h",
     "common_runtime/local_device.h",
     "common_runtime/memory_types.h",
@@ -2292,6 +2293,7 @@ CORE_CPU_LIB_HEADERS = CORE_CPU_BASE_HDRS + [
 tf_cuda_library(
     name = "core_cpu_impl",
     srcs = [
+        "common_runtime/recompute.cc",
         "common_runtime/accumulate_n_optimizer.cc",
         "common_runtime/allocator_retry.cc",
         "common_runtime/bfc_allocator.cc",

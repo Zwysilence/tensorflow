@@ -87,7 +87,6 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
       swap_params.out_fraction = 0.5;
     }
     cv_mu.first->wait(l, [ready]() { return *ready == SwapStatus::IN; });
-    l.unlock();
   }
 
   if (swap_triggers_.count(tensor_name) == 0) {
@@ -146,10 +145,10 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/tmp/daihulin/swap_policy.txt";
+  std::string swap_policy_file = "/tmp/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
-    LOG(FATAL) << "open " << swap_policy_file << " failed.";
+    LOG(INFO) << "open " << swap_policy_file << " failed.";
     return;
   }
   string out_tensor_name, in_trigger_name;

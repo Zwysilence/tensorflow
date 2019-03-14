@@ -150,6 +150,10 @@ class Buffer : public BufferBase {
     return alloc_->Name();
   }
 
+  Allocator* GetAllocator() {
+    return alloc_;
+  }
+
  private:
   T* data_;
   int64 elem_;
@@ -675,9 +679,22 @@ void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   buf_->RecordTensorAccess(tensor_name, time_);
 }
 
+void* Tensor::data() {
+  return buf_->data();
+}
+
+void Tensor::set_data(void* data) {
+  buf_->set_data(data);
+}
+
 string Tensor::AllocatorName() {
   if (buf_ == nullptr) return "";
   return buf_->AllocatorName();
+}
+
+Allocator* Tensor::GetAllocator() {
+  if (buf_ == nullptr) return nullptr;
+  return buf_->GetAllocator();
 }
 
 int64 Tensor::BufferSize() {
