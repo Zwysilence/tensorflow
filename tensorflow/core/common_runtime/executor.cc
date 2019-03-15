@@ -1431,6 +1431,12 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   // save recompute context
   RecomputeContextManager* rcm = RecomputeContextManager::GlobalRecomputeContextManager();
   RecomputeContextManager::RecomputeHandle rh = rcm->SetRecomputeContext(recompute_nodes, target_node, target_tensor, done);
+
+  // save handle and incremnt outstanding of iteration for nodes without inputs
+  for (auto& tn : ready) {
+    tn.recompute_handle = rh;
+    tn.input_frame->GetIteration(tn.input_iter)->outstanding_ops++;
+  }
   // Reset pending count
   const GraphView& gview = impl_->gview_;
   for (auto& tagged_node : recompute_tagged_nodes) {
@@ -1445,6 +1451,7 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
     tn.input_frame->ReActivateNodes(tn.node, node_to_slot[tn.node], tn.input_iter, rh, &ready);
   }
 
+  num_outstanding_ops_.fetch_add(ready.size(), std::memory_order_relaxed);
   ScheduleReady(ready, nullptr);
 }
 
@@ -2027,6 +2034,26 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
         // Synchronous computes.
         OpKernelContext ctx(&params, item.num_outputs);
         nodestats::SetOpStart(stats);
+        /*
+        static std::unordered_set<std::string> specific_nodes{
+          "GradientDescent/update_v/cg/conv3/biases/ApplyGradientDescent",
+          "v/tower_0/gradients/AddN_24"
+        };
+        if (specific_nodes.count(item.node->name())) {
+          std::vector<const Edge*> input_edges;
+          auto status = item.node->input_edges(&input_edges); // not include control-dependency
+          std::cout << "inputs of " << item.node->name() << ": ";
+          for (auto e : input_edges) {
+            std::cout << e->src()->name() << " ";
+          }
+          std::cout << "\n";
+          std::cout << "inputs value of " << item.node->name() << ": ";
+          for (auto & tv : inputs) {
+            std::cout << tv.tensor->shape().DebugString() << " ";
+          }
+          std::cout << "\n";
+        }
+        */
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
@@ -2828,7 +2855,7 @@ void ExecutorState::FrameState::ReActivateNodes(const Node* node, const int outp
   }
   
   if (output_tensor.has_value == false) {
-    std::cout << "Didn't find the tensor\n";
+    std::cout << "Didn't find the tensor " << node->id() << "\n";
     return;
   }
 

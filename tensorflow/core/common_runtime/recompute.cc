@@ -12,7 +12,6 @@ namespace tensorflow {
 
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_, RecomputeCall recompute) {
   if (tensor_recompute_params_map_.count(tensor_name)) {
-    LOG(INFO) << "RecordTensorAccess " << tensor_name;
     auto& recompute_params = tensor_recompute_params_map_[tensor_name];
     auto& cv_mu = recompute_params.cv_mu;
     volatile int* ready = &(recompute_params.data_ready);
@@ -46,7 +45,6 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
   if (delete_trigger.delete_trigger_count != 0 && cnt == delete_trigger.delete_trigger_count) {
     DeleteMemory(delete_trigger.tensor_name);
   }
-  //LOG(INFO) << "Out RecordTensorAccess " << tensor_name;
   //if (trigger.recompute_trigger_count != 0 && cnt == trigger.recompute_trigger_count) {
   //  RecomputeTensor(trigger.recompute_tensor);
   //}
@@ -117,6 +115,7 @@ void RecomputeHelper::LoadRecomputePolicy() {
   std::string target_tensor, trigger_tensor, feed_tensor, line;
   int del_cnt, total1, compute_cnt, total2;
   while(std::getline(fin, line)) {
+    if (line.empty() || line[0] == '#') continue;
     std::istringstream iss(line);
     iss >> target_tensor >> total1 >> del_cnt >> trigger_tensor >> total2 >> compute_cnt;
     auto& params = tensor_recompute_params_map_[target_tensor];
