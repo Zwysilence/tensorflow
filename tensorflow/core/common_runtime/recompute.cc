@@ -10,62 +10,80 @@
 
 namespace tensorflow {
 
-void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_, RecomputeCall recompute) {
-  if (tensor_recompute_params_map_.count(tensor_name)) {
-    auto& recompute_params = tensor_recompute_params_map_[tensor_name];
+void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
+  if (tensor_recompute_params_.count(tensor_name)) {
+    RecomputeTensor(tensor_name);
+    auto& recompute_params = tensor_recompute_params_[tensor_name];
     auto& cv_mu = recompute_params.cv_mu;
     volatile int* ready = &(recompute_params.data_ready);
-    if (recompute_params.data_ready == DataStatus::OUT) {
-      LOG(INFO) << "Recompute " << tensor_name;
-      *ready = DataStatus::RECOMPUTING;
-      recompute(recompute_params.target_tensor, recompute_params.feed_tensors, [&tensor_name, &cv_mu, ready]() {
+    std::unique_lock<std::mutex> l(*(cv_mu.second));
+    cv_mu.first->wait(l, [ready]() { return *ready == DataStatus::IN; });
+  }
+
+  if (!triggers_.count(tensor_name)) {
+    return;
+  }
+
+  auto& trigger = triggers_[tensor_name];
+  int cnt;
+  {
+    std::lock_guard<std::mutex> l(mu_);
+    cnt = ++trigger.access_count;
+    if (trigger.access_count == trigger.total_access_count) {
+      trigger.access_count = 0;
+    }
+  }
+  if (trigger.delete_trigger_count != 0 && cnt == trigger.delete_trigger_count) {
+    DeleteMemory(trigger.tensor_name);
+  }
+  if (cnt <= trigger.recompute_tensors.size()) {
+    for (auto& t : trigger.recompute_tensors[cnt-1]) 
+      RecomputeTensor(t);
+  }
+}
+
+void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
+  if (!recompute_calls.count(tensor_name)) {
+    LOG(FATAL) << "Don't have the recompute call for " << tensor_name;
+  }
+
+  auto& params = tensor_recompute_params_[tensor_name];
+  auto& cv_mu = params.cv_mu;
+  volatile int* ready = &(params.data_ready);
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  if (*ready == DataStatus::OUT) {
+    LOG(INFO) << "Recompute " << tensor_name;
+    *ready = DataStatus::RECOMPUTING;
+    recompute_calls[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, &cv_mu, ready]() {
         std::unique_lock<std::mutex> l(*(cv_mu.second));
         *ready = DataStatus::IN;
         cv_mu.first->notify_all();
         LOG(INFO) << "Recompute done " << tensor_name;
       });
-    }
-    std::unique_lock<std::mutex> l(*(cv_mu.second));
-    cv_mu.first->wait(l, [ready]() { return *ready == DataStatus::IN; });
   }
-
-  if (!delete_triggers_.count(tensor_name) && !compute_triggers_.count(tensor_name)) {
-    return;
-  }
-
-  auto& delete_trigger = delete_triggers_[tensor_name];
-  int cnt;
-  {
-    std::lock_guard<std::mutex> l(mu_);
-    cnt = ++delete_trigger.access_count;
-    if (delete_trigger.access_count == delete_trigger.total_access_count) {
-      delete_trigger.access_count = 0;
-    }
-  }
-  if (delete_trigger.delete_trigger_count != 0 && cnt == delete_trigger.delete_trigger_count) {
-    DeleteMemory(delete_trigger.tensor_name);
-  }
-  //if (trigger.recompute_trigger_count != 0 && cnt == trigger.recompute_trigger_count) {
-  //  RecomputeTensor(trigger.recompute_tensor);
-  //}
 }
 
 void RecomputeHelper::RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor) {
-  if (!tensor_recompute_params_map_.count(tensor_name)) return;
-  tensor_recompute_params_map_[tensor_name].buf = tensor->buffer();
-  tensor_recompute_params_map_[tensor_name].data_ready = DataStatus::IN;
+  if (!tensor_recompute_params_.count(tensor_name)) return;
+  tensor_recompute_params_[tensor_name].buf = tensor->buffer();
+  tensor_recompute_params_[tensor_name].data_ready = DataStatus::IN;
+}
+
+void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
+  if (!tensor_recompute_params_.count(tensor_name)) return;
+  recompute_calls[tensor_name] = std::move(call);
 }
 
 void RecomputeHelper::IncrementUsingCount(const std::string& tensor_name) {
-  if (!tensor_recompute_params_map_.count(tensor_name)) return;
-  auto& params = tensor_recompute_params_map_[tensor_name];
+  if (!tensor_recompute_params_.count(tensor_name)) return;
+  auto& params = tensor_recompute_params_[tensor_name];
   std::lock_guard<std::mutex> l(mu_);
   params.using_count++;
 }
 
 void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
-  if (!tensor_recompute_params_map_.count(tensor_name)) return;
-  auto& params = tensor_recompute_params_map_[tensor_name];
+  if (!tensor_recompute_params_.count(tensor_name)) return;
+  auto& params = tensor_recompute_params_[tensor_name];
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.using_count--;
@@ -85,7 +103,7 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
 
 void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
   LOG(INFO) << "Deleting memory of " << tensor_name;
-  auto& params= tensor_recompute_params_map_[tensor_name];
+  auto& params= tensor_recompute_params_[tensor_name];
   if (!params.buf) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
@@ -118,7 +136,7 @@ void RecomputeHelper::LoadRecomputePolicy() {
     if (line.empty() || line[0] == '#') continue;
     std::istringstream iss(line);
     iss >> target_tensor >> total1 >> del_cnt >> trigger_tensor >> total2 >> compute_cnt;
-    auto& params = tensor_recompute_params_map_[target_tensor];
+    auto& params = tensor_recompute_params_[target_tensor];
     params.target_tensor = target_tensor;
     params.cv_mu = std::make_pair(std::make_shared<std::condition_variable>(), std::make_shared<std::mutex>());
     while(iss >> feed_tensor) {
@@ -129,18 +147,20 @@ void RecomputeHelper::LoadRecomputePolicy() {
     params.using_count = 0;
     params.then_delete = false;
 
-    auto& delete_trigger = delete_triggers_[target_tensor];
+    auto& delete_trigger = triggers_[target_tensor];
     delete_trigger.tensor_name = target_tensor;
     delete_trigger.access_count = 0;
     delete_trigger.delete_trigger_count = del_cnt;
     delete_trigger.total_access_count = total1;
 
-    auto& compute_trigger = compute_triggers_[trigger_tensor];
-    compute_trigger.tensor_name = trigger_tensor;
-    compute_trigger.access_count = 0;
-    compute_trigger.compute_trigger_count = compute_cnt;
-    compute_trigger.total_access_count = total2;
-    compute_trigger.params = &params;
+    if (compute_cnt > 0) {
+      auto& compute_trigger = triggers_[trigger_tensor];
+      compute_trigger.tensor_name = trigger_tensor;
+      compute_trigger.access_count = 0;
+      compute_trigger.total_access_count = total2;
+      compute_trigger.recompute_tensors.resize(total2);
+      compute_trigger.recompute_tensors[compute_cnt-1].push_back(target_tensor);
+    }
   }
   LOG(INFO) << "Recompute policy file loaded.";
 }

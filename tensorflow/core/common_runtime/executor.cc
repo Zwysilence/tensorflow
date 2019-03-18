@@ -1632,12 +1632,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     if (tensor_val.name.empty()) continue;  // TODO: find reason
     const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
     if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
-    recompute_helper->RecordTensorAccess(tensor_val.name, time_, 
-      [this, frame, iter](const std::string& target_tensor, 
-                    const std::vector<std::string>& feed_tensors, 
-                    std::function<void()> done) {
-                      Recompute(target_tensor, frame, iter, feed_tensors, done);
-                    });
+    recompute_helper->RecordTensorAccess(tensor_val.name, time_);
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -1690,6 +1685,11 @@ void ExecutorState::MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, E
     entry->frame = frame;
     entry->iter = iter;
     recompute_helper->RecordTensorBuffer(entry->tensor_name, entry->ref ? entry->ref : entry->val.get());
+    recompute_helper->RecordRecomputeCall(entry->tensor_name, [this, frame, iter](const std::string& target_tensor, 
+                                                                                  const std::vector<std::string>& feed_tensors, 
+                                                                                  std::function<void()> done) {
+                                                                                    Recompute(target_tensor, frame, iter, feed_tensors, done);
+                                                                                  });
   }
 }
 

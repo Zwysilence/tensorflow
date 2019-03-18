@@ -21,8 +21,10 @@ class RecomputeHelper {
   }
   typedef std::function<void()> RecomputeDoneCallback;
   typedef std::function<void(const std::string&, const std::vector<std::string>&, RecomputeDoneCallback)> RecomputeCall;
-  void RecordTensorAccess(const std::string& tensor_name, const uint64 time_, RecomputeCall recompute); 
+  void RecordTensorAccess(const std::string& tensor_name, const uint64 time_); 
   void RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor);
+  void RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call);
+  void RecomputeTensor(const std::string& tensor_name);
   void LoadRecomputePolicy();
   void DeleteMemory(const std::string& tensor_name);
   void IncrementUsingCount(const std::string& tensor_name);
@@ -45,24 +47,17 @@ class RecomputeHelper {
     bool then_delete;
   };
 
-  struct DeleteTriggerInfo {
+  struct TriggerInfo {
     std::string tensor_name;
     int access_count;
-    int delete_trigger_count;
     int total_access_count;
+    int delete_trigger_count; // delete itself
+    std::vector<std::vector<std::string>> recompute_tensors;
   };
 
-  struct ComputeTriggerInfo {
-    std::string tensor_name;
-    int access_count;
-    int compute_trigger_count;
-    int total_access_count;
-    Params* params;
-  };
-
-  std::unordered_map<std::string, Params> tensor_recompute_params_map_;
-  std::unordered_map<std::string, DeleteTriggerInfo> delete_triggers_;
-  std::unordered_map<std::string, ComputeTriggerInfo> compute_triggers_;
+  std::unordered_map<std::string, Params> tensor_recompute_params_;
+  std::unordered_map<std::string, RecomputeCall> recompute_calls;
+  std::unordered_map<std::string, TriggerInfo> triggers_;
   std::mutex mu_;
 };
 }
