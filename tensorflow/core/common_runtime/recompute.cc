@@ -124,7 +124,7 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::LoadRecomputePolicy() {
-  std::string policy_file = "/tmp/recompute_policy.txt";
+  std::string policy_file = "/home/frog/vfonel/recompute_policy.txt";
   std::fstream fin(policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << policy_file << " failed.";
