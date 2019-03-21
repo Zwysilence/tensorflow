@@ -27,6 +27,7 @@ limitations under the License.
 #include <mutex>
 #include <cuda_runtime.h>
 #include <functional>
+#include <fstream>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
@@ -59,7 +60,17 @@ class GPUBFCAllocator : public BFCAllocator {
                   const string& name);
   GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
                   const GPUOptions& gpu_options, const string& name);
-  virtual ~GPUBFCAllocator() {}
+  virtual ~GPUBFCAllocator() {
+    const std::string invalid_swap_filename = "/tmp/invalid_swap.txt";
+    std::fstream fout(invalid_swap_filename, fout.out);
+    if (!fout.is_open()) {
+      LOG(ERROR) << "Fail to open invalid swap file";
+      return;
+    }
+    for (auto& name : invalid_swap_) {
+      fout << name << "\n";
+    }
+  }
 
   void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf);
 
@@ -198,6 +209,8 @@ class GPUBFCAllocator : public BFCAllocator {
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
+
+  std::unordered_set<std::string> invalid_swap_;
 
   static cudaStream_t device_to_device_stream_;
 

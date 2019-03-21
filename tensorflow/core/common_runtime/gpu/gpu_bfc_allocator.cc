@@ -24,7 +24,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
-#include <fstream>
 #include <thread>
 #include <chrono>
 #include <cuda_runtime.h>
@@ -50,7 +49,7 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
-const int64 kCopyThreshold = 100 << 20;    // 100M
+const int64 kCopyThreshold = 2 << 20;    // 2M
 
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
 cudaStream_t GPUBFCAllocator::host_to_device_stream_;
@@ -142,6 +141,11 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
     swap_params.data_ready = SwapStatus::OUT;
     swap_params.then_deallocate = false;
   }
+
+  if (!swap_params.can_deallocate_after_swap_out && swap_params.then_deallocate) {
+    swap_params.data_ready = SwapStatus::IN;
+    cv_mu.first->notify_all();
+  }
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
@@ -154,7 +158,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
-  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count 
+  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count
             >> in_trigger_name >> in_trigger_total_access >> in_trigger_count) {
     if (out_tensor_name[0] == '#') {
       continue;
@@ -182,7 +186,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
   }
 }
 
-Status PrepareCopy(Device* device, const DeviceContext* ctx, 
+Status PrepareCopy(Device* device, const DeviceContext* ctx,
     const DeviceBase::GpuDeviceInfo** dev_info, gpu::Stream** stream) {
   if (device == nullptr) {
     return errors::Internal("Unexpected null device.");
@@ -204,6 +208,9 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
 }
 
 void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size) {
+  if (invalid_swap_.count(tensor_name) != 0) {
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -236,6 +243,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::IN;
     return;
   }
+
+  LOG(INFO) << "Start to swap out " << tensor_name;
 
   swap_params.swapped_gpu_buffer = std::make_pair(src_ptr, gpu_part_size);
 
@@ -283,6 +292,9 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   std::lock_guard<std::mutex> l(lock_);
+  if (invalid_swap_.count(tensor_name) != 0) {
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -291,7 +303,13 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     int ready = swap_params.data_ready;
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
-        //swap_params.data_ready = SwapStatus::IN;
+        //swap_params.data_ready = SwapStatus::IN;  // this can lead to larger memory pressure
+        LOG(WARNING) << "Swap in when swapping out not finish: " << tensor_name;
+        if (invalid_swap_.insert(tensor_name).second) {
+          LOG(INFO) << "Push " << tensor_name << " into invalid swap success";
+        } else {
+          LOG(ERROR) << "Push " << tensor_name << " into invalid swap failed";
+        }
         swap_params.can_deallocate_after_swap_out = false;
       }
       return;
