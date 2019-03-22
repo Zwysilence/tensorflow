@@ -27,6 +27,7 @@ limitations under the License.
 #include <mutex>
 #include <cuda_runtime.h>
 #include <functional>
+#include <fstream>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
@@ -198,6 +199,8 @@ class GPUBFCAllocator : public BFCAllocator {
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
+
+  std::unordered_set<std::string> invalid_swap_;
 
   static cudaStream_t device_to_device_stream_;
 

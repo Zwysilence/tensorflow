@@ -348,11 +348,12 @@ class GraphView {
                 : reinterpret_cast<NodeItem*>(space_ + node_offsets_[id]));
   }
 
+  int32 num_nodes_ = 0;
+
  private:
   char* InitializeNode(char* ptr, const Node* n);
   size_t NodeItemBytes(const Node* n);
 
-  int32 num_nodes_ = 0;
   uint32* node_offsets_ = nullptr;  // array of size "graph_.num_node_ids()"
   // node_offsets_[id] holds the byte offset for node w/ "id" in space_
 
@@ -1387,9 +1388,9 @@ class ExecutorState {
   // use for recomputation
   void MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, EntryVector* outputs);
 
-  void IncrementUsingCountOfTensors(const TensorValueVec* inputs);
+  void IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs);
 
-  void DecrementUsingCountOfTensors(const Entry* inputs, int num_inputs);
+  void DecrementUsingCountOfTensors(const TaggedNode& tagged_node, const Entry* inputs, int num_inputs);
 
   void Recompute(const std::string& target_tensor, FrameState* frame, const int64 iter, const std::vector<std::string>& feed_tensors, std::function<void()> done);
 
@@ -1585,7 +1586,8 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
   }
 }
 
-void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
+void ExecutorState::IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs) {
+  if (tagged_node.recompute_handle != -1) return; // skip recompute node
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   for(auto &tensor_val : *inputs) {
     auto tensor = tensor_val.tensor;
@@ -1595,7 +1597,8 @@ void ExecutorState::IncrementUsingCountOfTensors(const TensorValueVec* inputs) {
   }
 }
 
-void ExecutorState::DecrementUsingCountOfTensors(const Entry* first_input, int num_inputs) {
+void ExecutorState::DecrementUsingCountOfTensors(const TaggedNode& tagged_node, const Entry* first_input, int num_inputs) {
+  if (tagged_node.recompute_handle != -1) return; // skip recompute node
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   for (int i = 0; i < num_inputs; ++i) {
     const Entry* entry = first_input + i;
@@ -1622,6 +1625,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   int i = -1;
   const GraphView& gview = impl_->gview_;
   for(auto &tensor_val : *inputs) {
+    //if (gview.num_nodes_ != 2980) break;
     ++i;
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue; 
@@ -1929,6 +1933,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
   inline_ready.push_back(tagged_node);
   while (!inline_ready.empty()) {
     tagged_node = inline_ready.front();
+    //std::cout << tagged_node.node->name() << " " << tagged_node.node->id() << " " << (tagged_node.recompute_handle!=-1?"recompute":"") << "\n";
     inline_ready.pop_front();
     const Node* node = tagged_node.node;
     FrameState* input_frame = tagged_node.input_frame;
@@ -1983,12 +1988,12 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       bool is_input_dead = false; 
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
-      IncrementUsingCountOfTensors(&inputs);
+      IncrementUsingCountOfTensors(tagged_node, &inputs);
       RecordTensorsAccess(tagged_node, &inputs, first_input, stats_flag);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
-        DecrementUsingCountOfTensors(first_input, num_inputs);
+        DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
         }
@@ -2034,7 +2039,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
 
           // Clears inputs.
           const int num_inputs = state->item->num_inputs;
-          DecrementUsingCountOfTensors(first_input, num_inputs);
+          DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
           for (int i = 0; i < num_inputs; ++i) {
             (first_input + i)->ClearVal();
           }
@@ -2062,6 +2067,22 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
           if (completed) Finish();
         };
         nodestats::SetOpStart(stats);
+        /*
+        if (state->item->node->name().find("FusedBatchNormGrad") != std::string::npos) {
+          std::vector<const Edge*> input_edges;
+          auto status = state->item->node->input_edges(&input_edges); // not include control-dependency
+          std::cout << "inputs of " << state->item->node->name() << ": ";
+          for (auto e : input_edges) {
+            std::cout << e->src()->name() << " ";
+          }
+          std::cout << "\n";
+          std::cout << "inputs value of " << state->item->node->name() << ": ";
+          for (auto & tv : inputs) {
+            std::cout << tv.tensor->shape().DebugString() << " ";
+          }
+          std::cout << "\n";
+        }
+        */
         device->ComputeAsync(async, &state->ctx, done);
       } else {
         // Synchronous computes.
@@ -2069,10 +2090,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
         nodestats::SetOpStart(stats);
         /*
         static std::unordered_set<std::string> specific_nodes{
-          "GradientDescent/update_v/cg/conv3/biases/ApplyGradientDescent",
-          "v/tower_0/gradients/AddN_24"
+          "FusedBatchNorm_grad/FusedBatchNormGrad"
         };
-        if (specific_nodes.count(item.node->name())) {
+        // if (specific_nodes.count(item.node->name())) {
+        if (item.node->name().find("FusedBatchNormGrad") != std::string::npos) {
           std::vector<const Edge*> input_edges;
           auto status = item.node->input_edges(&input_edges); // not include control-dependency
           std::cout << "inputs of " << item.node->name() << ": ";
@@ -2110,7 +2131,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
 
       // Clears inputs.
       const int num_inputs = item.num_inputs;
-      DecrementUsingCountOfTensors(first_input, num_inputs);
+      DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
       }

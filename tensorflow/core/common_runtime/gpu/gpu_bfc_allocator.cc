@@ -24,7 +24,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
-#include <fstream>
 #include <thread>
 #include <chrono>
 #include <cuda_runtime.h>
@@ -50,7 +49,7 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
-const int64 kCopyThreshold = 100 << 20;    // 100M
+const int64 kCopyThreshold = 2 << 20;    // 2MB
 
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
 cudaStream_t GPUBFCAllocator::host_to_device_stream_;
@@ -142,10 +141,16 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
     swap_params.data_ready = SwapStatus::OUT;
     swap_params.then_deallocate = false;
   }
+
+  if (!swap_params.can_deallocate_after_swap_out && swap_params.then_deallocate) {
+    LOG(INFO) << "Set status in for " << swap_params.tensor_name;
+    swap_params.data_ready = SwapStatus::IN;
+    cv_mu.first->notify_all();
+  }
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/tmp/swap_policy.txt";
+  std::string swap_policy_file = "/home/frog/vfonel/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << swap_policy_file << " failed.";
@@ -204,6 +209,10 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
 }
 
 void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size) {
+  if (invalid_swap_.count(tensor_name) != 0) {
+    // LOG(INFO) << "Pass a invalid swap out: " << tensor_name;
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -214,6 +223,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
       return;
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
+
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   float out_fraction = swap_params.out_fraction;
@@ -237,6 +247,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     return;
   }
 
+  LOG(INFO) << "Start to swap out: " << tensor_name; // << ", Status: " << swap_params.data_ready;
+
   swap_params.swapped_gpu_buffer = std::make_pair(src_ptr, gpu_part_size);
 
   static Allocator* cuda_host_allocator = ProcessState::singleton()->GetCUDAHostAllocator(0);
@@ -252,13 +264,18 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   // Use of the input may outlive stack scope, so keep a ref.
   tensor_buffer->Ref();
   std::function<void()>* doneD2H = new std::function<void()>(
-      [this, tensor_buffer, gpu_part_size, cpu_part_dst_ptr, &swap_params] {
+    [this, tensor_buffer, gpu_part_size, cpu_part_dst_ptr, &swap_params] {
         auto &cv_mu = swap_params.cv_mu;
         std::unique_lock<std::mutex> lk(*(cv_mu.second));
-        if (cpu_part_dst_ptr != swap_params.swapped_cpu_buffer.first)
+        if (cpu_part_dst_ptr != swap_params.swapped_cpu_buffer.first) {
+          LOG(INFO) << "return 1" << swap_params.tensor_name;
           return;
+        }
         // NOTE: assume gpu->gpu part is completed first than gpu->cpu part.
         if (swap_params.can_deallocate_after_swap_out) {
+          if (!swap_params.tensor_name.compare("203:0")) {
+            LOG(ERROR) << swap_params.tensor_name << " should not appear here";
+          }
           if (tensor_buffer->UsingCount() == 0) {
             swap_params.data_ready = SwapStatus::OUT;
             if (gpu_part_size <= 0)
@@ -267,11 +284,13 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
               SplitBuffer(tensor_buffer->data(), gpu_part_size);
             tensor_buffer->set_data(nullptr);
           } else {
+            LOG(INFO) << "Leave computation to deallocate this tensor: " << swap_params.tensor_name;
             swap_params.then_deallocate = true;
           }
         } else {
           cuda_host_allocator->DeallocateRaw(cpu_part_dst_ptr);
           swap_params.data_ready = SwapStatus::IN;
+          LOG(INFO) << "Swap out finish to set status IN for " << swap_params.tensor_name;
           swap_params.can_deallocate_after_swap_out = true;
         }
         cv_mu.first->notify_all();
@@ -283,6 +302,10 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   std::lock_guard<std::mutex> l(lock_);
+  if (invalid_swap_.count(tensor_name) != 0) {
+    // LOG(INFO) << "Pass a invalid swap in: " << tensor_name;
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -291,14 +314,22 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     int ready = swap_params.data_ready;
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
-        //swap_params.data_ready = SwapStatus::IN;
+        // swap_params.data_ready = SwapStatus::IN;
+        LOG(WARNING) << "Swap in when swapping out not finish: " << tensor_name;
+        if (invalid_swap_.insert(tensor_name).second) {
+          LOG(INFO) << "Push " << tensor_name << " into invalid swap success";
+        } else {
+          LOG(WARNING) << "Push " << tensor_name << " into invalid swap failed";
+        }
         swap_params.can_deallocate_after_swap_out = false;
       }
+      // LOG(INFO) << "Swap in return: " << tensor_name << ", Status: " << ready;
       return;
     }
     swap_params.data_ready = SwapStatus::SWAPPING_IN;
   }
 
+  LOG(INFO) << "Start to swap in: " << tensor_name;
   void* gpu_part_src_ptr = swap_params.swapped_gpu_buffer.first;
   void* cpu_part_src_ptr = swap_params.swapped_cpu_buffer.first;
   int64 gpu_part_size = swap_params.swapped_gpu_buffer.second;
@@ -350,7 +381,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   cudaCheckError(cudaMemcpyAsync((void*)((uintptr_t)dst_ptr + gpu_part_size), cpu_part_src_ptr, cpu_part_size, cudaMemcpyHostToDevice, host_to_device_stream_));
   // Use of the input may outlive stack scope, so keep a ref.
   std::function<void()>* doneH2D = new std::function<void()>(
-      [dst_ptr, cpu_part_src_ptr, &swap_params]() {
+    [dst_ptr, cpu_part_src_ptr, &swap_params]() {
         auto &cv_mu = swap_params.cv_mu;
         std::lock_guard<std::mutex> l(*(cv_mu.second));
         swap_params.data_ready = SwapStatus::IN;
