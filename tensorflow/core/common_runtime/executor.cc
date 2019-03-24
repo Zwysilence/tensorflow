@@ -1624,8 +1624,26 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   int i = -1;
   const GraphView& gview = impl_->gview_;
+
+  static const char* num_nodes_str = getenv("TF_MODEL_NUM_NODES");
+  static bool flag = true;
+  static int num_nodes_ = -1;
+  if (flag) {
+    if (num_nodes_str != nullptr && 
+        strcmp(num_nodes_str, "") != 0) {
+      if (!strings::safe_strto32(num_nodes_str, &num_nodes_)) {
+        LOG(WARNING) << "Invalid value for env-var: TF_MODEL_NUM_NODES";
+      }
+    }
+    else {
+      LOG(WARNING) << "Not set env-var: TF_MODEL_NUM_NODES";
+    }
+    LOG(INFO) << "TF_MODEL_NUM_NODES set to: " << num_nodes_;
+    flag = false;
+  }
+
   for(auto &tensor_val : *inputs) {
-    //if (gview.num_nodes_ != 2980) break;
+    if (gview.num_nodes_ != num_nodes_) break;
     ++i;
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue; 

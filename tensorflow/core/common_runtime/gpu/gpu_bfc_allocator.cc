@@ -49,7 +49,7 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
-const int64 kCopyThreshold = 2 << 20;    // 2MB
+const int64 kCopyThreshold = 2 << 20;    // 2M
 
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
 cudaStream_t GPUBFCAllocator::host_to_device_stream_;
@@ -159,7 +159,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
-  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count 
+  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count
             >> in_trigger_name >> in_trigger_total_access >> in_trigger_count) {
     if (out_tensor_name[0] == '#') {
       continue;
@@ -187,7 +187,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
   }
 }
 
-Status PrepareCopy(Device* device, const DeviceContext* ctx, 
+Status PrepareCopy(Device* device, const DeviceContext* ctx,
     const DeviceBase::GpuDeviceInfo** dev_info, gpu::Stream** stream) {
   if (device == nullptr) {
     return errors::Internal("Unexpected null device.");
@@ -224,6 +224,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
 
+  LOG(INFO) << "Start to swap out: " << tensor_name;
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   float out_fraction = swap_params.out_fraction;
@@ -314,12 +315,12 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     int ready = swap_params.data_ready;
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
-        // swap_params.data_ready = SwapStatus::IN;
+        //swap_params.data_ready = SwapStatus::IN;  // this can lead to larger memory pressure
         LOG(WARNING) << "Swap in when swapping out not finish: " << tensor_name;
         if (invalid_swap_.insert(tensor_name).second) {
           LOG(INFO) << "Push " << tensor_name << " into invalid swap success";
         } else {
-          LOG(WARNING) << "Push " << tensor_name << " into invalid swap failed";
+          LOG(ERROR) << "Push " << tensor_name << " into invalid swap failed";
         }
         swap_params.can_deallocate_after_swap_out = false;
       }
