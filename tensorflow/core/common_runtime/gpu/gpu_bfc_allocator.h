@@ -197,6 +197,8 @@ class GPUBFCAllocator : public BFCAllocator {
 
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
+  std::unordered_set<std::string> invalid_swap_;
+
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
 
   static cudaStream_t device_to_device_stream_;

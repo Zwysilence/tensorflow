@@ -50,7 +50,7 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
-const int64 kCopyThreshold = 100 << 20;    // 100M
+const int64 kCopyThreshold = 2 << 20;    // 2M
 
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
 cudaStream_t GPUBFCAllocator::host_to_device_stream_;
@@ -77,7 +77,7 @@ GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
       cudaEventCreate(&cuda_event_);
     }
 
-  void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64 _time) {
+void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64 _time) {
   if (tensor_swap_params_map_.count(tensor_name)) {
     SwapIn(tensor_name);
     auto &swap_params = tensor_swap_params_map_[tensor_name];
@@ -145,13 +145,19 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
     swap_params.data_ready = SwapStatus::OUT;
     swap_params.then_deallocate = false;
   }
+
+  if (!swap_params.can_deallocate_after_swap_out && swap_params.then_deallocate) {
+    LOG(INFO) << "Set status in for " << swap_params.tensor_name;
+    swap_params.data_ready = SwapStatus::IN;
+    cv_mu.first->notify_all();
+  }
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
   std::string swap_policy_file = "/tmp/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
-    LOG(FATAL) << "open " << swap_policy_file << " failed.";
+    LOG(INFO) << "open " << swap_policy_file << " failed.";
     return;
   }
   string out_tensor_name, in_trigger_name;
@@ -207,6 +213,10 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
 }
 
 void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size) {
+  if (invalid_swap_.count(tensor_name) != 0) {
+    // LOG(INFO) << "Pass a invalid swap out: " << tensor_name;
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -286,6 +296,10 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   std::lock_guard<std::mutex> l(lock_);
+  if (invalid_swap_.count(tensor_name) != 0) {
+    // LOG(INFO) << "Pass a invalid swap in: " << tensor_name;
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
