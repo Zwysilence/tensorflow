@@ -1325,9 +1325,10 @@ void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* output
     entry->tensor_name = tensor_name;
 
     if (entry->ref) {
-      entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
+      entry->ref->RecordSwapContext({tensor_name});
     } else {
-      entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
+      //entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
+      entry->val->RecordSwapContext({tensor_name});
     }
   }
 }

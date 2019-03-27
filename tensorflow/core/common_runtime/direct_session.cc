@@ -568,7 +568,6 @@ Status DirectSession::Run(const RunOptions& run_options,
 
   int64 end_time = now_in_usec();
 
-  const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
     static int graph_id_ = 0;
     std::string graph_dir = "/home/uniquesc/v-xuapen/tf_static_graph/";

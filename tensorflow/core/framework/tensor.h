@@ -38,13 +38,8 @@ namespace tensorflow {
 class TensorBuffer;  // Forward declaration.
 class TensorCApi;
 
-class Device;
-class DeviceContext;
-
 struct TensorParams {
   string name;
-  Device * device;
-  DeviceContext * device_context;
 };
 
 /// @ingroup core

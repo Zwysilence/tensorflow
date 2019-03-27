@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/transpose_functor.h"
 #include "tensorflow/core/util/cuda_kernel_helper.h"
 
+
 namespace tensorflow {
 namespace internal {
 

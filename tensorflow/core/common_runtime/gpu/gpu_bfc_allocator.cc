@@ -115,8 +115,8 @@ void GPUBFCAllocator::RecordSwapContext(const TensorParams& params, TensorBuffer
   if (tensor_swap_params_map_.count(params.name) == 0) return;
   const string &tensor_name = params.name;
   TensorSwapParams& swap_params = tensor_swap_params_map_[tensor_name];
-  swap_params.device = params.device;
-  swap_params.device_context = params.device_context;
+  // swap_params.device = params.device;
+  // swap_params.device_context = params.device_context;
   swap_params.tensor_buffer = tensor_buf;
   swap_params.data_ready = SwapStatus::IN;
   swap_params.can_deallocate_after_swap_out = true;
