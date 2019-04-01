@@ -154,7 +154,7 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/tmp/swap_policy.txt";
+  std::string swap_policy_file = "/home/frog/tmp/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << swap_policy_file << " failed.";
