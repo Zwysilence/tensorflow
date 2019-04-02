@@ -154,7 +154,7 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/home/frog/tmp/swap_policy.txt";
+  std::string swap_policy_file = "/tmp/swap_policy.txt";
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << swap_policy_file << " failed.";
@@ -228,6 +228,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
 
+  
+
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   float out_fraction = swap_params.out_fraction;
   void* src_ptr = (void*)(tensor_buffer->data());
@@ -249,6 +251,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::IN;
     return;
   }
+
+  LOG(INFO) << "Start to swap out: " << tensor_name;
 
   swap_params.swapped_gpu_buffer = std::make_pair(src_ptr, gpu_part_size);
 
@@ -309,6 +313,12 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
         //swap_params.data_ready = SwapStatus::IN;
+        LOG(WARNING) << "Swap in when swapping out not finish: " << tensor_name;
+        if (invalid_swap_.insert(tensor_name).second) {
+          LOG(INFO) << "Push " << tensor_name << " into invalid swap success";
+        } else {
+          LOG(ERROR) << "Push " << tensor_name << " into invalid swap failed";
+        }
         swap_params.can_deallocate_after_swap_out = false;
       }
       return;
@@ -316,6 +326,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     swap_params.data_ready = SwapStatus::SWAPPING_IN;
   }
 
+  LOG(INFO) << "Start to swap in: " << tensor_name;
   void* gpu_part_src_ptr = swap_params.swapped_gpu_buffer.first;
   void* cpu_part_src_ptr = swap_params.swapped_cpu_buffer.first;
   int64 gpu_part_size = swap_params.swapped_gpu_buffer.second;
