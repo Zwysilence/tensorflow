@@ -143,6 +143,11 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
     swap_params.data_ready = SwapStatus::OUT;
     swap_params.then_deallocate = false;
   }
+
+  if (!swap_params.can_deallocate_after_swap_out && swap_params.then_deallocate) {
+    swap_params.data_ready = SwapStatus::IN;
+    cv_mu.first->notify_all();
+  }
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
@@ -205,6 +210,9 @@ Status PrepareCopy(Device* device, const DeviceContext* ctx,
 }
 
 void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size) {
+  if (invalid_swap_.count(tensor_name) != 0) {
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -215,6 +223,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
       return;
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
+
+  LOG(INFO) << "Start to swap out: " << tensor_name;
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   float out_fraction = swap_params.out_fraction;
@@ -237,6 +247,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::IN;
     return;
   }
+
+  LOG(INFO) << "Start to swap out " << tensor_name;
 
   swap_params.swapped_gpu_buffer = std::make_pair(src_ptr, gpu_part_size);
 
@@ -284,6 +296,9 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   std::lock_guard<std::mutex> l(lock_);
+  if (invalid_swap_.count(tensor_name) != 0) {
+    return;
+  }
   CHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
@@ -293,6 +308,12 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     if (ready != SwapStatus::OUT) {
       if (ready == SwapStatus::SWAPPING_OUT) {
         //swap_params.data_ready = SwapStatus::IN;
+        LOG(WARNING) << "Swap in when swapping out not finish: " << tensor_name;
+        if (invalid_swap_.insert(tensor_name).second) {
+          LOG(INFO) << "Push " << tensor_name << " into invalid swap success";
+        } else {
+          LOG(ERROR) << "Push " << tensor_name << " into invalid swap failed";
+        }
         swap_params.can_deallocate_after_swap_out = false;
       }
       return;
@@ -300,6 +321,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     swap_params.data_ready = SwapStatus::SWAPPING_IN;
   }
 
+  LOG(INFO) << "Start to swap in: " << tensor_name;
   void* gpu_part_src_ptr = swap_params.swapped_gpu_buffer.first;
   void* cpu_part_src_ptr = swap_params.swapped_cpu_buffer.first;
   int64 gpu_part_size = swap_params.swapped_gpu_buffer.second;
