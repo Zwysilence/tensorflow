@@ -467,6 +467,7 @@ struct TensorValue {
   mutex* mutex_if_ref;  // nullptr if not a ref, != nullptr if a ref
   Tensor* tensor;
   string name;
+  string readable_name;
 };
 
 class OpKernelContext {

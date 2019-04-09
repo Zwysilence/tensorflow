@@ -834,6 +834,7 @@ class ExecutorState {
           alloc_attr(other.alloc_attr),
           device_context(other.device_context),
           tensor_name(other.tensor_name) ,
+          readable_name(other.readable_name) ,
           frame(other.frame),
           iter(other.iter) {
       if (val_field_is_set) {
@@ -855,6 +856,7 @@ class ExecutorState {
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
       tensor_name = other.tensor_name;
+      readable_name = other.readable_name;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -874,6 +876,7 @@ class ExecutorState {
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
       tensor_name = other.tensor_name;
+      readable_name = other.readable_name;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -913,6 +916,8 @@ class ExecutorState {
     DeviceContext* device_context = nullptr;
 
     string tensor_name;
+
+    string readable_name;
 
     FrameState* frame = nullptr;
 
@@ -1654,7 +1659,17 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     if (tensor_val.name.empty()) continue;  // TODO: find reason
     const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
     if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
-    recompute_helper->RecordTensorAccess(tensor_val.name, time_);
+
+    //**********************DEBUG***********************************
+    //static std::unordered_set<std::string> specific_nodes{
+    //    "v/tower_0/cg/resnet_v12/conv8/batchnorm8/FusedBatchNorm",
+    //    "v/tower_0/cg/resnet_v12/conv8/Relu"
+    //};
+    //if (specific_nodes.count(tensor_val.readable_name)) {
+    //  LOG(INFO) << "Tracking buffer: Name " << tensor_val.readable_name << " Buffer " << tensor->buffer();
+    //}
+    //**********************DEBUG***********************************
+    recompute_helper->RecordTensorAccess(tensor_val.name, tensor_val.readable_name, time_);
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -1686,6 +1701,7 @@ void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* output
 
     string tensor_name = id_str + ":" + std::to_string(i);
     entry->tensor_name = tensor_name;
+    entry->readable_name = item.node->name() + ":" + std::to_string(i);
 
     if (entry->ref) {
       entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
@@ -2106,26 +2122,26 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
         // Synchronous computes.
         OpKernelContext ctx(&params, item.num_outputs);
         nodestats::SetOpStart(stats);
-        /*
         static std::unordered_set<std::string> specific_nodes{
-          "FusedBatchNorm_grad/FusedBatchNormGrad"
+          "v/tower_0/cg/resnet_v12/conv9/conv2d/Conv2D",
+          "v/tower_0/gradients/v/tower_0/cg/resnet_v13/conv11/conv2d/Conv2D_grad/Conv2DBackpropFilter",
+          "v/tower_0/cg/resnet_v10/conv1/conv2d/Conv2D"
         };
-        // if (specific_nodes.count(item.node->name())) {
-        if (item.node->name().find("FusedBatchNormGrad") != std::string::npos) {
+        if (specific_nodes.count(item.node->name())) {
+        //if (item.node->name().find("FusedBatchNormGrad") != std::string::npos) {
           std::vector<const Edge*> input_edges;
           auto status = item.node->input_edges(&input_edges); // not include control-dependency
-          std::cout << "inputs of " << item.node->name() << ": ";
+          std::cout << "Inputs of " << item.node->name() << "(" << item.node->id() << "): ";
           for (auto e : input_edges) {
-            std::cout << e->src()->name() << " ";
+            std::cout << "[" << e->src()->name() << "] ";
           }
           std::cout << "\n";
-          std::cout << "inputs value of " << item.node->name() << ": ";
+          std::cout << "Inputs value of " << item.node->name() << ": ";
           for (auto & tv : inputs) {
-            std::cout << tv.tensor->shape().DebugString() << " ";
+            std::cout << "[Name: " << tv.readable_name << "(" << tv.name << ") Shape: " << tv.tensor->shape().DebugString() << " is_ref: " << tv.is_ref() << " data: " << tv.tensor->data() << " buffer: " << tv.tensor->buffer() << "] ";
           }
           std::cout << "\n";
         }
-        */
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
@@ -2204,6 +2220,7 @@ Status ExecutorState::PrepareInputs(const NodeItem& item, Entry* first_input,
     // i-th input.
     TensorValue* inp = &(*inputs)[i];
     inp->name = entry->tensor_name;
+    inp->readable_name = entry->readable_name;
 
     // Only merge and transfer nodes can have no-value inputs.
     if (!entry->has_value) {
@@ -2930,7 +2947,7 @@ void ExecutorState::FrameState::ReActivateNodes(const Node* node, const int outp
   }
   
   if (output_tensor.has_value == false) {
-    std::cout << "Didn't find the tensor " << node->id() << "\n";
+    LOG(INFO) << "Didn't find the tensor " << node->name() << ":" << output_slot << "(" << node->id() << ":" << output_slot << ")";
     return;
   }
 
@@ -3046,8 +3063,9 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
         const int dst_slot = e.input_slot;
         const int dst_loc = dst_item->input_start + dst_slot;
         if ((*outputs)[src_slot].val_field_is_set) {
-          iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
-          (*outputs)[src_slot].val->set_data(nullptr);
+          //iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
+          //(*outputs)[src_slot].val->set_data(nullptr);
+          LOG(INFO) << "Recompute tensor done: " << item->node->name() << ":" << src_slot << "(" << item->node->id() << ":" << src_slot << ")";
         } else {
           LOG(FATAL) << "Swapping buffer with a ref is not handled yet.";
         }

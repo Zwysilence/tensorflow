@@ -22,6 +22,10 @@ class RecomputeHelper {
   typedef std::function<void()> RecomputeDoneCallback;
   typedef std::function<void(const std::string&, const std::vector<std::string>&, RecomputeDoneCallback)> RecomputeCall;
   void RecordTensorAccess(const std::string& tensor_name, const uint64 time_); 
+  void RecordTensorAccess(const std::string& tensor_name, const std::string& readable_name, const uint64 time_) {
+    readable_names_[tensor_name] = readable_name;
+    RecordTensorAccess(tensor_name, time_);
+  }
   void RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor);
   void RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call);
   void RecomputeTensor(const std::string& tensor_name);
@@ -56,8 +60,9 @@ class RecomputeHelper {
   };
 
   std::unordered_map<std::string, Params> tensor_recompute_params_;
-  std::unordered_map<std::string, RecomputeCall> recompute_calls;
+  std::unordered_map<std::string, RecomputeCall> recompute_calls_;
   std::unordered_map<std::string, TriggerInfo> triggers_;
+  std::unordered_map<std::string, std::string> readable_names_;
   std::mutex mu_;
 };
 }

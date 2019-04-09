@@ -10,6 +10,13 @@
 
 namespace tensorflow {
 
+const std::string recompute_policy_env = "RECOMPUTE_POLICY_FILE";
+
+static std::string GetEnv(const std::string& env) {
+  const char* val = std::getenv(env.c_str());
+  return val ? val : "";
+}
+
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
   if (tensor_recompute_params_.count(tensor_name)) {
     RecomputeTensor(tensor_name);
@@ -43,7 +50,7 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
 }
 
 void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
-  if (!recompute_calls.count(tensor_name)) {
+  if (!recompute_calls_.count(tensor_name)) {
     LOG(FATAL) << "Don't have the recompute call for " << tensor_name;
   }
 
@@ -54,7 +61,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
   if (*ready == DataStatus::OUT) {
     LOG(INFO) << "Recompute " << tensor_name;
     *ready = DataStatus::RECOMPUTING;
-    recompute_calls[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, &cv_mu, ready]() {
+    recompute_calls_[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, &cv_mu, ready]() {
         std::unique_lock<std::mutex> l(*(cv_mu.second));
         *ready = DataStatus::IN;
         cv_mu.first->notify_all();
@@ -71,13 +78,15 @@ void RecomputeHelper::RecordTensorBuffer(const std::string& tensor_name, Tensor*
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
-  recompute_calls[tensor_name] = std::move(call);
+  recompute_calls_[tensor_name] = std::move(call);
 }
 
 void RecomputeHelper::IncrementUsingCount(const std::string& tensor_name) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
   auto& params = tensor_recompute_params_[tensor_name];
-  std::lock_guard<std::mutex> l(mu_);
+  auto& cv_mu = params.cv_mu;
+  //std::lock_guard<std::mutex> l(mu_);
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.using_count++;
 }
 
@@ -90,11 +99,11 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
   if (params.using_count == 0 && params.then_delete) {
     TensorBuffer* buf = params.buf;
     Allocator* alloc = buf->GetAllocator();
-    alloc->DeallocateRaw(buf->data());
-    buf->set_data(nullptr);
+    //alloc->DeallocateRaw(buf->data());
+    //buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
     params.then_delete = false;
-    LOG(INFO) << "Deleted " << tensor_name;
+    LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
   } else if (params.using_count < 0) {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
     params.using_count = 0;
@@ -102,12 +111,12 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
-  LOG(INFO) << "Deleting memory of " << tensor_name;
   auto& params= tensor_recompute_params_[tensor_name];
   if (!params.buf) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
+  LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
   TensorBuffer* buf = params.buf;
   Allocator* alloc = buf->GetAllocator();
   auto& cv_mu = params.cv_mu;
@@ -116,15 +125,20 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     alloc->DeallocateRaw(buf->data());
     buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
-    LOG(INFO) << "Deleted " << tensor_name;
-  } else {
+    LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
+  } else if (params.using_count > 0) {
     params.then_delete = true;
+  } else {
+    LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
   }
-  LOG(INFO) << "Out delete memory of " << tensor_name;
 }
 
 void RecomputeHelper::LoadRecomputePolicy() {
-  std::string policy_file = "/home/frog/vfonel/recompute_policy.txt";
+  std::string policy_file = GetEnv(recompute_policy_env);
+  if (policy_file.empty()) {
+    LOG(INFO) << "No recompute policy specified";
+    return;
+  }
   std::fstream fin(policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << policy_file << " failed.";

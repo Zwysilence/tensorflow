@@ -43,11 +43,13 @@ using perftools::gputools::Stream;
 
 namespace tensorflow {
 
-std::string GetEnv(const string& env_name) {
+std::string GetEnv(const std::string& env_name) {
   const char* env_p = std::getenv(env_name.c_str());
   if (env_p == nullptr) return "";
   return env_p;
 }
+
+const std::string swap_policy_env = "SWAP_POLICY_FILE";
 
 const int64 kCopyThreshold = 2 << 20;    // 2M
 
@@ -150,7 +152,11 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/home/frog/vfonel/swap_policy.txt";
+  std::string swap_policy_file = GetEnv(swap_policy_env);
+  if (swap_policy_file.empty()) {
+    LOG(INFO) << "No swap policy specified";
+    return;
+  }
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << swap_policy_file << " failed.";
