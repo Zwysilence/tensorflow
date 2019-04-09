@@ -50,6 +50,8 @@ std::string GetEnv(const string& env_name) {
   return env_p;
 }
 
+const std::string swap_policy_env = "SWAP_POLICY_FILE";
+
 const int64 kCopyThreshold = 2 << 20;    // 2M
 
 cudaStream_t GPUBFCAllocator::device_to_device_stream_;
@@ -93,7 +95,7 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name, const uint64
   }
 
   if (swap_triggers_.count(tensor_name) == 0) {
-    return;
+     return;
   }
 
   auto& swap_trigger = swap_triggers_[tensor_name];
@@ -154,7 +156,11 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
 }
 
 void GPUBFCAllocator::LoadSwapPolicy() {
-  std::string swap_policy_file = "/tmp/swap_policy.txt";
+  std::string swap_policy_file = GetEnv(swap_policy_env);
+  if (swap_policy_file.empty()) {
+    LOG(INFO) << "No swap policy specified";
+    return;
+  }
   std::fstream fin(swap_policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << swap_policy_file << " failed.";
@@ -228,8 +234,6 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
 
-  
-
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   float out_fraction = swap_params.out_fraction;
   void* src_ptr = (void*)(tensor_buffer->data());
@@ -284,9 +288,11 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
               SplitBuffer(tensor_buffer->data(), gpu_part_size);
             tensor_buffer->set_data(nullptr);
           } else {
+            LOG(INFO) << swap_params.tensor_name << ", leave computation to deallocate";
             swap_params.then_deallocate = true;
           }
         } else {
+          LOG(INFO) << swap_params.tensor_name << ", ad_aso: false";
           cuda_host_allocator->DeallocateRaw(cpu_part_dst_ptr);
           swap_params.data_ready = SwapStatus::IN;
           swap_params.can_deallocate_after_swap_out = true;

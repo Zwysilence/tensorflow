@@ -10,6 +10,13 @@
 
 namespace tensorflow {
 
+const std::string recompute_policy_env = "RECOMPUTE_POLICY_FILE";
+
+static std::string GetEnv(const std::string& env) {
+  const char* val = std::getenv(env.c_str());
+  return val ? val : "";
+}
+
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
   if (tensor_recompute_params_.count(tensor_name)) {
     RecomputeTensor(tensor_name);
@@ -124,7 +131,11 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::LoadRecomputePolicy() {
-  std::string policy_file = "/home/frog/maweiliang/tmp/recompute_policy.txt";
+  std::string policy_file = GetEnv(recompute_policy_env);
+  if (policy_file.empty()) {
+    LOG(INFO) << "No recompute policy specified";
+    return;
+  }
   std::fstream fin(policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << policy_file << " failed.";

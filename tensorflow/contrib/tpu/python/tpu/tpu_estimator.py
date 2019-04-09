@@ -2385,13 +2385,15 @@ class TPUEstimator(estimator_lib.Estimator):
             hooks=None,
             steps=None,
             max_steps=None,
-            saving_listeners=None):
+            saving_listeners=None,
+            options=None, 
+            run_metadata=None):
     rendezvous = error_handling.ErrorRendezvous(num_sources=3)
     self._rendezvous[model_fn_lib.ModeKeys.TRAIN] = rendezvous
     try:
       return super(TPUEstimator, self).train(
           input_fn=input_fn, hooks=hooks, steps=steps, max_steps=max_steps,
-          saving_listeners=saving_listeners
+          saving_listeners=saving_listeners, options=options, run_metadata=run_metadata
       )
     except Exception:  # pylint: disable=broad-except
       rendezvous.record_error('training_loop', sys.exc_info())

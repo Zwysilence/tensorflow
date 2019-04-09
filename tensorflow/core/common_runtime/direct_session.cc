@@ -754,14 +754,17 @@ Status DirectSession::Run(const RunOptions& run_options,
       graph_id_++;
       std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
       std::string graph_fanin_filename = graph_dir + std::to_string(graph_id_) + "_innodes.txt";
+      std::string nodetoid_filename = graph_dir + std::to_string(graph_id_) + "_node2id.txt";
       std::fstream fout_out(graph_fanout_filename, fout_out.out);
       std::fstream fout_in(graph_fanin_filename, fout_in.out);
-      if (!(fout_out.is_open() && fout_in.is_open())) {
+      std::fstream fout_n2i(nodetoid_filename, fout_n2i.out);
+      if (!(fout_out.is_open() && fout_in.is_open() && fout_n2i.is_open())) {
         LOG(ERROR) << "Failed to open graph file!";
         break;
       }
       
       for (Node* node : item.graph->nodes()) {
+        fout_n2i << node->name() << "\t" << node->id() << "\n";
         // Write the fanouts of node
         fout_out << node->name() << "\t";
         for (auto it : node->out_nodes()) {
@@ -783,6 +786,7 @@ Status DirectSession::Run(const RunOptions& run_options,
 
       fout_out.close();
       fout_in.close();
+      fout_n2i.close();
     }
   }
 

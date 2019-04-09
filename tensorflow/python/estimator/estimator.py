@@ -283,7 +283,9 @@ class Estimator(object):
             hooks=None,
             steps=None,
             max_steps=None,
-            saving_listeners=None):
+            saving_listeners=None,
+            options=None,
+            run_metadata=None):
     """Trains a model given training data `input_fn`.
 
     Args:
@@ -353,7 +355,7 @@ class Estimator(object):
       hooks.extend(self._convert_train_steps_to_hooks(steps, max_steps))
 
       saving_listeners = _check_listeners_type(saving_listeners)
-      loss = self._train_model(input_fn, hooks, saving_listeners)
+      loss = self._train_model(input_fn, hooks, saving_listeners, options=options, run_metadata=run_metadata)
       logging.info('Loss for final step: %s.', loss)
       return self
 
@@ -1174,13 +1176,13 @@ class Estimator(object):
 
     return model_fn_results
 
-  def _train_model(self, input_fn, hooks, saving_listeners):
+  def _train_model(self, input_fn, hooks, saving_listeners, options=None, run_metadata=None):
     if self._train_distribution:
-      return self._train_model_distributed(input_fn, hooks, saving_listeners)
+      return self._train_model_distributed(input_fn, hooks, saving_listeners, options=options, run_metadata=run_metadata)
     else:
-      return self._train_model_default(input_fn, hooks, saving_listeners)
+      return self._train_model_default(input_fn, hooks, saving_listeners, options=options, run_metadata=run_metadata)
 
-  def _train_model_default(self, input_fn, hooks, saving_listeners):
+  def _train_model_default(self, input_fn, hooks, saving_listeners, options=None, run_metadata=None):
     """Initiate training with `input_fn`, without `DistributionStrategies`.
 
     Args:
@@ -1212,9 +1214,9 @@ class Estimator(object):
       global_step_tensor = training_util.get_global_step(g)
       return self._train_with_estimator_spec(estimator_spec, worker_hooks,
                                              hooks, global_step_tensor,
-                                             saving_listeners)
+                                             saving_listeners, options=options, run_metadata=run_metadata)
 
-  def _train_model_distributed(self, input_fn, hooks, saving_listeners):
+  def _train_model_distributed(self, input_fn, hooks, saving_listeners, options=None, run_metadata=None):
     """Initiate training with `input_fn`, using `DistributionStrategies`.
 
     Args:
@@ -1323,10 +1325,10 @@ class Estimator(object):
             scaffold=scaffold)
         return self._train_with_estimator_spec(estimator_spec, worker_hooks,
                                                hooks, global_step_tensor,
-                                               saving_listeners)
+                                               saving_listeners, options=options, run_metadata=run_metadata)
 
   def _train_with_estimator_spec(self, estimator_spec, worker_hooks, hooks,
-                                 global_step_tensor, saving_listeners):
+                                 global_step_tensor, saving_listeners, options=None, run_metadata=None):
     """Train a model with the given Estimator Spec."""
     if self._warm_start_settings:
       logging.info('Warm-starting with WarmStartSettings: %s' %
@@ -1406,7 +1408,8 @@ class Estimator(object):
         log_step_count_steps=self._config.log_step_count_steps) as mon_sess:
       loss = None
       while not mon_sess.should_stop():
-        _, loss = mon_sess.run([estimator_spec.train_op, estimator_spec.loss])
+        # TODO
+        _, loss = mon_sess.run([estimator_spec.train_op, estimator_spec.loss], options=options, run_metadata=run_metadata)
     return loss
 
   def _evaluate_build_graph(self, input_fn, hooks=None, checkpoint_path=None):

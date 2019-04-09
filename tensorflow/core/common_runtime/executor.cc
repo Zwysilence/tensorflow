@@ -1685,10 +1685,24 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   }
 
   for(auto &tensor_val : *inputs) {
-    if (gview.num_nodes_ != num_nodes_) break;
+    if (gview.num_nodes_ != num_nodes_) {
+      break;
+    }
     ++i;
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue; 
+    // LOG(INFO) << tensor_val.name;
+    // if (tensor->buffer() == nullptr) {
+    //   LOG(INFO) << tensor_val.name << "'s buf_ is nullptr";
+    // } else {
+    //   LOG(INFO) << tensor_val.name << " : " << tensor->data();
+    // }
+    // LOG(INFO) << "Allocator " << tensor->AllocatorName();
+    // if (tensor->data() == nullptr) {
+    //   LOG(INFO) << tensor_val.name << "'s data is nullptr";
+    // } else {
+    //   LOG(INFO) << tensor_val.name << " :" << tensor->data();
+    // }
     tensor->RecordTensorAccess(tensor_val.name, time_);
     // record tensor access for recomputation
     if (tensor_val.name.empty()) continue;  // TODO: find reason
