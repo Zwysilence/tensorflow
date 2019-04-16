@@ -679,7 +679,8 @@ void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   buf_->RecordTensorAccess(tensor_name, time_);
 }
 
-void* Tensor::data() {
+void* Tensor::data() const {
+  if (!buf_) return nullptr;
   return buf_->data();
 }
 

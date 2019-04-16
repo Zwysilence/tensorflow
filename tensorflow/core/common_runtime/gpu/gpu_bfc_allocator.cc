@@ -68,7 +68,8 @@ GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
     : BFCAllocator(
           new GPUMemAllocator(
               GpuIdUtil::ExecutorForCudaGpuId(cuda_gpu_id).ValueOrDie()),
-          total_memory, gpu_options.allow_growth(), name) {
+          //total_memory, gpu_options.allow_growth(), name) {
+          total_memory, true, name) {
       LoadSwapPolicy();
       cudaStreamCreate(&device_to_device_stream_);
       cudaStreamCreate(&host_to_device_stream_);

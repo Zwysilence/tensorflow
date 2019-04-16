@@ -65,7 +65,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
         std::unique_lock<std::mutex> l(*(cv_mu.second));
         *ready = DataStatus::IN;
         cv_mu.first->notify_all();
-        LOG(INFO) << "Recompute done " << tensor_name;
+        LOG(INFO) << "Recompute " << tensor_name << " done";
       });
   }
 }
@@ -99,8 +99,8 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
   if (params.using_count == 0 && params.then_delete) {
     TensorBuffer* buf = params.buf;
     Allocator* alloc = buf->GetAllocator();
-    //alloc->DeallocateRaw(buf->data());
-    //buf->set_data(nullptr);
+    alloc->DeallocateRaw(buf->data());
+    buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
     params.then_delete = false;
     LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
@@ -128,6 +128,7 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
   } else if (params.using_count > 0) {
     params.then_delete = true;
+    params.data_ready = DataStatus::OUT;
   } else {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
   }

@@ -1296,6 +1296,8 @@ class ExecutorState {
 
   volatile bool recomputing_ = false;
 
+  std::unordered_map<string, int> node_names_map_;
+
   // Mapping from frame name to outstanding frames. A new frame is created
   // at some iteration of an active frame. So the unique key for the new
   // child frame is composed of the name of the parent frame, the iteration
@@ -1409,9 +1411,11 @@ class ExecutorState {
 
   void FindNodes(const std::vector<std::string>& tensors, std::unordered_set<const Node*>* nodes);
 
-  void ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, int>* node_to_slot);
+  void ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, std::unordered_set<int>>* node_to_slot);
 
-  Node* FindNode(const std::string& tensor_name);
+  void ParseTensorName(const std::string& tensor_name, std::string* node_name, int* slot);
+
+  Node* FindNodeName(const std::string& tensor_name);
 };
 
 // The format of tensor is "node_id:output_slot", target_tensor is in the "iter"-th iteration of "frame"
@@ -1421,10 +1425,13 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   cv_.wait(l, [pflag] { return !(*pflag); });
   recomputing_ = true;
   std::unordered_set<const Node*> feed_nodes;
-  std::unordered_map<const Node*, int> node_to_slot;
+  std::unordered_map<const Node*, std::unordered_set<int>> node_to_slot;
   FindNodes(feed_tensors, &feed_nodes);
   ParseTensorNames(feed_tensors, &node_to_slot);
-  const Node* target_node = FindNode(target_tensor);
+  string target_node_name;
+  int target_slot;
+  ParseTensorName(target_tensor, &target_node_name, &target_slot);
+  const Node* target_node = FindNodeName(target_node_name);
   std::unordered_set<const Node*> recompute_nodes;
   std::vector<TaggedNode> recompute_tagged_nodes;
   std::vector<TaggedNode> feed_tagged_nodes;
@@ -1485,7 +1492,9 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
 
   // TODO: handle
   for (auto& tn : feed_tagged_nodes) {
-    tn.input_frame->ReActivateNodes(tn.node, node_to_slot[tn.node], tn.input_iter, rh, &ready);
+    for (auto slot : node_to_slot[tn.node]) {
+      tn.input_frame->ReActivateNodes(tn.node, slot, tn.input_iter, rh, &ready);
+    }
   }
 
   num_outstanding_ops_.fetch_add(ready.size(), std::memory_order_relaxed);
@@ -1511,32 +1520,41 @@ void ExecutorState::RemoveUnrelatedControlDependencies(const std::unordered_set<
   }
 }
 
-void ExecutorState::ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, int>* node_to_slot) {
-  const Graph* g = impl_->graph_.get();
+void ExecutorState::ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, std::unordered_set<int>>* node_to_slot) {
   for (auto& name : tensors) {
     auto pos = name.find(':');
     if (pos != std::string::npos) {
-      int node_id = stoi(name.substr(0, pos));
+      string node_name = name.substr(0, pos);
       int slot_id = stoi(name.substr(pos+1));
-      node_to_slot->insert({g->FindNodeId(node_id), slot_id});
+      (*node_to_slot)[FindNodeName(node_name)].insert(slot_id);
     } else {
-      int node_id = stoi(name);
-      node_to_slot->insert({g->FindNodeId(node_id), 0});
+      (*node_to_slot)[FindNodeName(name)].insert(0);
     }
   }
 }
 
+void ExecutorState::ParseTensorName(const std::string& tensor_name, std::string* node_name, int* slot) {
+    auto pos = tensor_name.find(':');
+    if (pos != std::string::npos) {
+      *node_name = tensor_name.substr(0, pos);
+      *slot = stoi(tensor_name.substr(pos+1));
+    } else {
+      *node_name = tensor_name;
+      *slot = 0;
+    }
+}
+
 void ExecutorState::FindNodes(const std::vector<std::string>& tensors, std::unordered_set<const Node*>* nodes) {
-  const Graph* g = impl_->graph_.get();
   for (auto& name : tensors) {
-    int id = stoi(name.substr(0, name.find(':')));
-    nodes->insert(g->FindNodeId(id));
+    string node_name = name.substr(0, name.find(':'));
+    nodes->insert(FindNodeName(node_name));
   }
 }
 
-Node* ExecutorState::FindNode(const std::string& tensor_name) {
+Node* ExecutorState::FindNodeName(const std::string& name) {
+  if (!node_names_map_.count(name)) return nullptr;
   const Graph* g = impl_->graph_.get();
-  return g->FindNodeId(stoi(tensor_name.substr(0, tensor_name.find(':'))));
+  return g->FindNodeId(node_names_map_.at(name));
 }
 
 void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes, 
@@ -1629,6 +1647,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   int i = -1;
   const GraphView& gview = impl_->gview_;
+  const Graph* graph = impl_->graph_.get();
 
   static const char* num_nodes_str = getenv("TF_MODEL_NUM_NODES");
   static bool flag = true;
@@ -1657,7 +1676,9 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     FrameState* frame = input_entries[i].frame;
     int64 iter = input_entries[i].iter;
     if (tensor_val.name.empty()) continue;  // TODO: find reason
-    const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
+    const Node* node = FindNodeName(tensor_val.name.substr(0, tensor_val.name.find(':')));
+    if (!node) continue;
+    const NodeItem& item = *gview.node(node->id());
     if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
 
     //**********************DEBUG***********************************
@@ -1692,14 +1713,13 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
 }
 
 void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
-  const string& id_str = std::to_string(item.node->id());
   Device* device = static_cast<Device*>(ctx->device());
   DeviceContext* dev_ctx = ctx->op_device_context();
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
 
-    string tensor_name = id_str + ":" + std::to_string(i);
+    string tensor_name = item.node->name() + ":" + std::to_string(i);
     entry->tensor_name = tensor_name;
     entry->readable_name = item.node->name() + ":" + std::to_string(i);
 
@@ -1760,6 +1780,15 @@ ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
       root_frame_->pending_counts, root_frame_->total_input_tensors);
 
   outstanding_frames_.insert({root_frame_->frame_name, root_frame_});
+
+  // set for recomputation
+  const Graph* g = impl_->graph_.get();
+  int num_node_ids = g->num_node_ids();
+  for (int i = 0; i < num_node_ids; ++i) {
+    const Node* node = g->FindNodeId(i);
+    if (!node) continue;
+    node_names_map_[node->name()] = i;
+  }
 }
 
 ExecutorState::~ExecutorState() {
@@ -2024,6 +2053,11 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
                         &input_alloc_attrs, &is_input_dead);
       IncrementUsingCountOfTensors(tagged_node, &inputs);
       RecordTensorsAccess(tagged_node, &inputs, first_input, stats_flag);
+      static std::unordered_set<std::string> specific_nodes{
+      };
+      if (specific_nodes.count(tagged_node.node->name())) {
+        LOG(INFO) << "Ready to start " << tagged_node.node->name();
+      }
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
@@ -2123,9 +2157,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
         OpKernelContext ctx(&params, item.num_outputs);
         nodestats::SetOpStart(stats);
         static std::unordered_set<std::string> specific_nodes{
-          "v/tower_0/cg/resnet_v12/conv9/conv2d/Conv2D",
-          "v/tower_0/gradients/v/tower_0/cg/resnet_v13/conv11/conv2d/Conv2D_grad/Conv2DBackpropFilter",
-          "v/tower_0/cg/resnet_v10/conv1/conv2d/Conv2D"
+          "v/tower_0/cg/resnet_v16/conv23/batchnorm23/FusedBatchNorm",
+          "v/tower_0/cg/resnet_v16/conv23/conv2d/Conv2D"
         };
         if (specific_nodes.count(item.node->name())) {
         //if (item.node->name().find("FusedBatchNormGrad") != std::string::npos) {
@@ -2138,7 +2171,11 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
           std::cout << "\n";
           std::cout << "Inputs value of " << item.node->name() << ": ";
           for (auto & tv : inputs) {
-            std::cout << "[Name: " << tv.readable_name << "(" << tv.name << ") Shape: " << tv.tensor->shape().DebugString() << " is_ref: " << tv.is_ref() << " data: " << tv.tensor->data() << " buffer: " << tv.tensor->buffer() << "] ";
+            std::cout << "[Name: " << tv.name
+                      << " Shape: " << tv.tensor->shape().DebugString()
+                      << " is_ref: " << tv.is_ref()
+                      << " data: " << tv.tensor->data()
+                      << " buffer: " << tv.tensor->buffer() << "] ";
           }
           std::cout << "\n";
         }
@@ -2173,6 +2210,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       // Propagates outputs.
       if (s.ok()) {
         PropagateOutputs(tagged_node, &item, &outputs, &ready);
+      } else {
+        std::cout << tagged_node.node->name() << " not ok\n";
       }
       outputs.clear();
       if (!accessed_tensors.empty()) {
@@ -2187,8 +2226,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       completed = NodeDone(s, item.node, ready, stats, &inline_ready);
     }
 
-    //std::cout << tagged_node.node->name() << " done\n";
-  }  // while !inline_ready.empty()
+    // std::cout << tagged_node.node->name() << " done\n";
+  } // while !inline_ready.empty()
 
   // This thread of computation is done if completed = true.
   if (completed) Finish();
@@ -3063,9 +3102,8 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
         const int dst_slot = e.input_slot;
         const int dst_loc = dst_item->input_start + dst_slot;
         if ((*outputs)[src_slot].val_field_is_set) {
-          //iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
-          //(*outputs)[src_slot].val->set_data(nullptr);
-          LOG(INFO) << "Recompute tensor done: " << item->node->name() << ":" << src_slot << "(" << item->node->id() << ":" << src_slot << ")";
+          iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
+          (*outputs)[src_slot].val->set_data(nullptr);
         } else {
           LOG(FATAL) << "Swapping buffer with a ref is not handled yet.";
         }
