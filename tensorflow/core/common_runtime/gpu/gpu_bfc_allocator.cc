@@ -192,6 +192,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_in_trigger.access_count = 0;
     swap_in_trigger.total_access_count = in_trigger_total_access;
   }
+  fin.close();
 }
 
 Status PrepareCopy(Device* device, const DeviceContext* ctx,

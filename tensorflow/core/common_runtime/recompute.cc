@@ -177,6 +177,7 @@ void RecomputeHelper::LoadRecomputePolicy() {
       compute_trigger.recompute_tensors[compute_cnt-1].push_back(target_tensor);
     }
   }
+  fin.close();
   LOG(INFO) << "Recompute policy file loaded.";
 }
 
