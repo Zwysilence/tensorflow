@@ -99,6 +99,8 @@ EventMgr::EventMgr(se::StreamExecutor* se, const GPUOptions& gpu_options)
                                       : 10),
       accumulated_stream_(nullptr),
       accumulated_tensors_(new TensorReferenceVector),
+      // input_stream_(nullptr),
+      // input_buffers_(new HashBufferVector),
       accumulated_tensor_bytes_(0),
       threadpool_(Env::Default(), "GPU_Event_Manager", kNumThreads) {
   gpu_event_mgr::InitThreadpoolLabels(&threadpool_);
@@ -115,7 +117,9 @@ EventMgr::~EventMgr() {
   for (auto& t : *(accumulated_tensors_)) {
     t.Unref();
   }
+
   delete accumulated_tensors_;
+  // delete input_buffers_;
   while (!used_events_.empty()) {
     InUse* ue = &used_events_[0];
     delete ue->event;
@@ -125,6 +129,9 @@ EventMgr::~EventMgr() {
       }
       delete ue->mem;
     }
+    /* if (ue->h_buf != nullptr) {
+      delete ue->h_buf;
+    } */
     if (ue->bufrec.buf) {
       if (LogMemory::IsEnabled()) {
         LogMemory::RecordRawDeallocation(ue->bufrec.operation,
@@ -159,6 +166,20 @@ void EventMgr::StopPollingLoop() {
     polling_stopped_.reset(nullptr);
   }
 }
+
+/* void EventMgr::ThenRecordUsingCount(se::Stream* stream,const HashBufferVector& buffers,const bool increm) {
+  mutex_lock l(mu_);
+
+  for (const auto& b : buffers) {
+    input_buffers_->push_back(b);
+  }
+
+  DCHECK(!input_buffers_->empty());
+  DCHECK(stream != nullptr);
+  QueueHashBuffer(stream, input_buffers_, increm);
+  input_buffers_ = new HashBufferVector;
+} */
+
 
 void EventMgr::ThenDeleteTensors(se::Stream* stream,
                                  const TensorReferenceVector& tensors) {

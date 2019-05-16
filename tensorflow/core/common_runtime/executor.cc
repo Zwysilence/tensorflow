@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/executor.h"
 
+#include <cuda_runtime.h>
+
 #include <atomic>
 #include <deque>
 #include <memory>
@@ -68,6 +70,9 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
 #include "tensorflow/core/common_runtime/recompute.h"
+
+// #define _DEBUG
+// #define _DEBUGV2
 
 
 std::string GetEnv(const std::string& env_name)
@@ -926,13 +931,15 @@ class ExecutorState {
     // Clears the <val> field.
     void ClearVal() {
       if (val_field_is_set) {
-        val->DecrementUsingCount();
+        // LOG(INFO) << "fake decrease using count of tensors";
+        // val->DecrementUsingCount();
         val.Destroy();
         val_field_is_set = false;
         has_value = false;
-      } else if (ref) {
-        ref->DecrementUsingCount();
-      }
+      } // else if (ref) {
+        // LOG(INFO) << "fake decrease using count of tensors";
+        // ref->DecrementUsingCount();
+      // }
     }
 
     // A tensor value, if val_field_is_set.
@@ -1427,6 +1434,8 @@ class ExecutorState {
 
   void RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx);
 
+  void LogTensorValue(const NodeItem& item, EntryVector* outputs, const int64 step_id, bool is_gpu_tensor);
+
   // use for recomputation
   void MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, EntryVector* outputs);
 
@@ -1631,12 +1640,13 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
 void ExecutorState::IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs) {
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
-  for(auto &tensor_val : *inputs) {
-    auto tensor = tensor_val.tensor;
-    if (tensor == nullptr) continue;
-    tensor->IncrementUsingCount();
-    recompute_helper->IncrementUsingCount(tensor_val.name);
-  }
+  // LOG(INFO) << "fake increase tensor count";
+  // for(auto &tensor_val : *inputs) {
+  //   auto tensor = tensor_val.tensor;
+  //   if (tensor == nullptr) continue;
+  //   tensor->IncrementUsingCount();
+  //   recompute_helper->IncrementUsingCount(tensor_val.name);
+  // }
 }
 
 void ExecutorState::DecrementUsingCountOfTensors(const TaggedNode& tagged_node, const Entry* first_input, int num_inputs) {
@@ -1686,16 +1696,70 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
 
   for(auto &tensor_val : *inputs) {
     if (gview.num_nodes_ != num_nodes_) {
-      break;
+    #ifdef _DEBUGV2
+      LOG(INFO) << "error node num: " << gview.num_nodes_;
+    #endif
+      if (abs(num_nodes_ - gview.num_nodes_) < 6) {
+        num_nodes_ = gview.num_nodes_;
+        LOG(INFO) << "TF_MODEL_NUM_NODES has been modified to " << num_nodes_;
+      } else {
+        break;
+      }
     }
     ++i;
     auto tensor = tensor_val.tensor;
-    if (tensor == nullptr) continue; 
+    if (tensor == nullptr) continue;
     // LOG(INFO) << tensor_val.name;
     // if (tensor->buffer() == nullptr) {
     //   LOG(INFO) << tensor_val.name << "'s buf_ is nullptr";
     // } else {
-    //   LOG(INFO) << tensor_val.name << " : " << tensor->data();
+    //   const std::string t_name("4272:0");
+    //   if (!tensor_val.name.compare(t_name)) {
+    //     switch (tensor->dtype()) {
+    //     case DataType::DT_FLOAT:
+    //       LOG(INFO) << "float";
+    //       break;
+    //     case DataType::DT_DOUBLE:
+    //       LOG(INFO) << "double";
+    //       break;
+    //     case DataType::DT_INT32:
+    //       LOG(INFO) << "int32";
+    //       break;
+    //     case DataType::DT_INT64:
+    //       LOG(INFO) << "int64";
+    //       break;
+    //     default:
+    //       LOG(INFO) << "Not known";
+    //     }
+    //     if (tensor->data() == nullptr) {
+    //       LOG(INFO) << tensor_val.name << " is a nullptr!";
+    //     } else {
+    //       LOG(INFO) << tensor_val.name << ": " << tensor->data();
+    //       float h_f;
+    //       cudaError_t s = cudaMemcpy((void*)&h_f, tensor->data(), sizeof(float), cudaMemcpyDeviceToHost);
+    //       if (s != cudaSuccess) {
+    //         LOG(ERROR) << "Error when copy back!";
+    //       } else {
+    //         LOG(INFO) << "Success copying back!";
+    //       }
+    //       // LOG(INFO) << tensor_val.name << ": " << h_f;
+    //       // float f = *(static_cast<float*>(tensor->data()));
+    //       int k = (int&)h_f;
+
+    //       unsigned int base = 1 << 31;
+    //       for (int i = 0; i < 32; i++) {
+    //         if ((k & base) == 0) {
+    //           std::cout << "0";
+    //         } else {
+    //           std::cout << "1";
+    //         }
+    //         k = k << 1;
+    //       }
+    //       std::cout << std::endl;
+    //       // LOG(INFO) << tensor_val.name << " : " << tensor->dtype();
+    //       // LOG(INFO) << tensor_val.name << *(static_cast<float*>(tensor->data()));
+    //     }
+    // }
     // }
     // LOG(INFO) << "Allocator " << tensor->AllocatorName();
     // if (tensor->data() == nullptr) {
@@ -1706,9 +1770,9 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     tensor->RecordTensorAccess(tensor_val.name, time_);
     // record tensor access for recomputation
     if (tensor_val.name.empty()) continue;  // TODO: find reason
-    const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
-    if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
-    recompute_helper->RecordTensorAccess(tensor_val.name, time_);
+    // const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
+    // if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
+    // recompute_helper->RecordTensorAccess(tensor_val.name, time_);
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -1730,15 +1794,41 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   }
 }
 
+void ExecutorState::LogTensorValue(const NodeItem& item, EntryVector* outputs, const int64 step_id, bool is_gpu_tensor=true) {
+  // static string t_node_name = "bert/encoder/layer_8/output/add";
+  static int t_node_id = 2645;
+  static int64 t_step_id = 20;
+  if ((item.node->id() != t_node_id) || (step_id != t_step_id)) return;
+  const string& id_str = std::to_string(item.node->id());
+
+  
+  for (int i = 0; i < outputs->size(); ++i) {
+    Entry* entry = &((*outputs)[i]);
+    if (!entry->has_value) continue;
+
+    string tensor_name = id_str + ":" + std::to_string(i);
+
+    if (entry->ref) {
+      LOG(INFO) << "Reference Tensor value: ";
+      entry->ref->DebugStringToFile(tensor_name, step_id, is_gpu_tensor);
+    } else {
+      LOG(INFO) << "Tensor Value: ";
+      entry->val->DebugStringToFile(tensor_name, step_id, is_gpu_tensor);
+    }
+  }
+}
+
 void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
   const string& id_str = std::to_string(item.node->id());
+  const string& node_name = item.node->name();
   Device* device = static_cast<Device*>(ctx->device());
   DeviceContext* dev_ctx = ctx->op_device_context();
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
 
-    string tensor_name = id_str + ":" + std::to_string(i);
+    // string tensor_name = id_str + ":" + std::to_string(i);
+    string tensor_name = node_name + ":" + std::to_string(i);
     entry->tensor_name = tensor_name;
 
     if (entry->ref) {
@@ -1757,7 +1847,6 @@ void ExecutorState::MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, E
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
-
     entry->frame = frame;
     entry->iter = iter;
     recompute_helper->RecordTensorBuffer(entry->tensor_name, entry->ref ? entry->ref : entry->val.get());
@@ -2045,6 +2134,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
               << SummarizeNode(*node) << (tagged_node.is_dead ? " is dead" : "")
               << " device: " << device->name();
     }
+#ifdef _DEBUG
+    LOG(INFO) << "Process node: " << node->name() << "\t" << id;
+#endif
 
     Entry* input_tensors = (tagged_node.recompute_handle == -1 ? GetInputTensors(input_frame, input_iter) : GetRecomputeInputTensors(input_frame, input_iter));
     Entry* first_input = input_tensors + item.input_start;
@@ -2063,12 +2155,14 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       bool is_input_dead = false;
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
-      IncrementUsingCountOfTensors(tagged_node, &inputs);
+      // increase using_count of tensors when there is computation using them
+      // IncrementUsingCountOfTensors(tagged_node, &inputs);
+      // record this tensors access to see if any trigger will happen
       RecordTensorsAccess(tagged_node, &inputs, first_input, stats_flag);
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
-        DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
+        // DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
         }
@@ -2115,7 +2209,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
 
           // Clears inputs.
           const int num_inputs = state->item->num_inputs;
-          DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
+          // decrease tensor' using_count to indicate current computation has finished using these tensors
+          // (px): this is right on async kernel, this callback is invoked only the async kernel has finished
+          // DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
           for (int i = 0; i < num_inputs; ++i) {
             (first_input + i)->ClearVal();
           }
@@ -2148,10 +2244,15 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         // Synchronous computes.
         OpKernelContext ctx(&params, item.num_outputs);
         nodestats::SetOpStart(stats);
+        // (px): NOTICED HERE
+        // for GPU kernel, it will return while the kernel has enqueued into the stream, but not kernel's finishing
+        // And the postprocess are right even the computation did not finish
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
+        // record the tensor's related contexts, it's useful when conducting the mm related operations
         RecordSwapContexts(item, &outputs, &ctx);
+        // LogTensorValue(item, &outputs, step_id_, true);
         MarkOutputsWithFrameAndIter(tagged_node, &outputs);
         if (s.ok() && impl_->device_record_tensor_accesses_) {
           // Get the list of all tensors accessed during the execution
@@ -2172,7 +2273,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
 
       // Clears inputs.
       const int num_inputs = item.num_inputs;
-      DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
+      // decrease the tensor's using_count to indicate that computation don't use these tensors anymore
+      // TODO(px): as commented before that gpu kernel in Compute() return while this kernel is enqueued 
+      // into stream, so it's not an indication that this computation don't use these tensors.
+      // DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
       }

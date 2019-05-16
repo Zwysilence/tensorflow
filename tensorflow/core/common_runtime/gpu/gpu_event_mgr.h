@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_reference.h"
+// #include "tensorflow/core/framework/tensor_buffer_hash.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -28,6 +29,8 @@ limitations under the License.
 #include "tensorflow/core/platform/stream_executor.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+
+// #define _DEBUG
 
 namespace stream_executor {
 class Event;
@@ -71,6 +74,10 @@ class EventMgr {
   // all events currently enqueued on "stream" have completed.
   void ThenDeleteTensors(se::Stream* stream,
                          const TensorReferenceVector& tensors);
+
+  /*void ThenRecordUsingCount(se::Stream* stream,
+                            const HashBufferVector& buffers,
+                            const bool increm);*/
 
   struct BufRec {
     Allocator* alloc;
@@ -119,6 +126,8 @@ class EventMgr {
   struct InUse {
     se::Event* event;
     TensorReferenceVector* mem;
+    // HashBufferVector* h_buf;
+    // bool increm;
     BufRec bufrec;
     std::function<void()> func;
   };
@@ -133,6 +142,30 @@ class EventMgr {
         }
         delete iu.mem;
       }
+      /*if (iu.h_buf != nullptr) {
+        for (auto hb : *(iu.h_buf)) {
+          // Increase or Decrease the using count
+          if (iu.increm) {
+          #ifdef _DEBUG
+            LOG(INFO) << hb->get_name() << "\t" << hb->get_hash();
+          #endif
+            hb->Ref();
+          #ifdef _DEBUG
+            LOG(INFO) << hb->get_ref();
+          #endif
+          } else {
+          #ifdef _DEBUG
+            LOG(INFO) << hb->get_name() << "\t" << hb->get_hash();
+          #endif
+            // TODO(px): for some reason, this Unref() can cause enter into destructor which make the next Ref() check failed (ref_.load() < 1)
+            hb->Unref();
+          #ifdef _DEBUG
+            LOG(INFO) << hb->get_ref();
+          #endif
+          }
+        }
+        delete iu.h_buf;
+      }*/
       if (iu.bufrec.buf) {
         if (LogMemory::IsEnabled()) {
           LogMemory::RecordRawDeallocation(iu.bufrec.operation,
@@ -162,6 +195,11 @@ class EventMgr {
     QueueInUse(stream, {nullptr, nullptr, bufrec, nullptr});
   }
 
+  /*void QueueHashBuffer(se::Stream* stream, HashBufferVector* bufs, const bool increm=false)
+      EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    QueueInUse(stream, {nullptr, nullptr, bufs, increm, BufRec(), nullptr});
+  }*/
+
   void QueueFunc(se::Stream* stream, std::function<void()> func)
       EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     QueueInUse(stream, {nullptr, nullptr, BufRec(), std::move(func)});
@@ -189,6 +227,10 @@ class EventMgr {
   // Buffered list of tensors waiting to have an event queued for deletion
   se::Stream* accumulated_stream_ GUARDED_BY(mu_);
   TensorReferenceVector* accumulated_tensors_ GUARDED_BY(mu_);
+
+  // se::Stream* input_stream_ GUARDED_BY(mu_);
+  // HashBufferVector* input_buffers_ GUARDED_BY(mu_);
+
   // Sum of the TotalBytes() of the tensors in "accumulated_tensors_"
   int64 accumulated_tensor_bytes_ GUARDED_BY(mu_);
 

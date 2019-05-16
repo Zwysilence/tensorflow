@@ -72,6 +72,7 @@ class ResourceMgr;
 class ScopedStepContainer;
 class CollectiveExecutor;
 class StepStatsCollectorInterface;
+class BaseGPUDevice;
 
 class OpKernel {
  public:
@@ -1132,6 +1133,7 @@ class OpKernelContext {
 
   Status status_;
   friend class CollectiveExecutor;  // for access to params_
+  friend class BaseGPUDevice;       // for access to params_
   Params* params_;                  // not owned
   mutable mutex mu_;  // mutable so const accessors can acquire the lock
   gtl::InlinedVector<WrappedAllocator, 4> wrapped_allocators_ GUARDED_BY(mu_);

@@ -133,9 +133,13 @@ class Allocator {
     }
   }
 
-  virtual void RecordTensorAccess(const string &tensor_name, uint64 _time) {}
+  virtual void RecordTensorAccess(const string& tensor_name, TensorBuffer* tensor_buf, uint64 _time) {}
 
-  virtual void RecordSwapContext(const TensorParams &params, TensorBuffer * tensor_buf) {}
+  virtual void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf) {}
+
+  // virtual void GetOrCreateHashBuffer(const Tensor* tensor, const string& tensor_name, HashBuffer** hash_buf) {}
+
+  virtual void CheckInput(const string& tensor_name, TensorBuffer* tensor_buf, bool*, bool) {}
 
   virtual void Notify(TensorBuffer*) {}
 

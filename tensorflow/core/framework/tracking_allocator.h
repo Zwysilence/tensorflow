@@ -56,8 +56,11 @@ class TrackingAllocator : public Allocator {
  public:
   explicit TrackingAllocator(Allocator* allocator, bool track_ids);
   string Name() override { return allocator_->Name(); }
-  void RecordTensorAccess(const string& tensor_name, uint64 time_) override {
-    allocator_->RecordTensorAccess(tensor_name, time_);
+  void RecordTensorAccess(const string& tensor_name, TensorBuffer* buf, uint64 time_) override {
+    allocator_->RecordTensorAccess(tensor_name, buf, time_);
+  }
+  void RecordSwapContext(const TensorParams& params, TensorBuffer* buf) {
+    allocator_->RecordSwapContext(params, buf);
   }
   void* AllocateRaw(size_t alignment, size_t num_bytes) override {
     return AllocateRaw(alignment, num_bytes, AllocationAttributes());

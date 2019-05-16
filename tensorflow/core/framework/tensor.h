@@ -446,6 +446,10 @@ class Tensor {
   /// A human-readable summary of the tensor suitable for debugging.
   string DebugString() const;
 
+  void DebugStringToFile(const string& tensor_name, const int64 step_id, bool is_gpu_tensor=true);
+
+  string GetValue(int64 max_entries, void* h_data) const;
+
   /// Fill in the `TensorDescription` proto with metadata about the
   /// tensor that is useful for monitoring and debugging.
   void FillDescription(TensorDescription* description) const;
@@ -490,9 +494,8 @@ class Tensor {
 
   void set_data(void* dt);
 
-  TensorBuffer* buffer() {
-    return buf_;
-  }
+  TensorBuffer* buffer() const { return buf_; }
+
 
   string Name() const { return name_; }
 
@@ -524,6 +527,8 @@ class Tensor {
   friend class CastOpBase;            // For access to set_dtype;
   friend class OpKernelContext;       // For access to RefCountIsOne().
   friend class ScopedAllocator;       // For access to buf_.
+  friend class BaseGPUDevice;         // For access to buf_
+  friend class GPUBFCAllocator;       // For access to buf_
   friend class XlaTensor;             // For access to RefCountIsOne().
   friend class XlaTensorBuffer;  // For access to the private constructor taking
                                  // the buffer

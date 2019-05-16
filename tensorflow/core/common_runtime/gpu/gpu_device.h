@@ -76,6 +76,14 @@ class BaseGPUDevice : public LocalDevice {
 
   void Compute(OpKernel* op_kernel, OpKernelContext* context) override;
 
+  // void GetInputTensors(OpKernelContext* context, HashBufferVector* out_vec);
+
+  void CheckInputs(OpKernelContext* context, bool* flag, bool before);
+
+
+  // void IncreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers);
+  // void DecreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers);
+
   Status Sync() override;
 
   void ComputeAsync(AsyncOpKernel* op_kernel, OpKernelContext* context,

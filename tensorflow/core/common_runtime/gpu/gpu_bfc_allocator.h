@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_id.h"
+// #include "tensorflow/core/framework/tensor_buffer_hash.h"
 #include "tensorflow/core/platform/stream_executor.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
@@ -49,6 +50,7 @@ class TensorParams;
 class TensorBuffer;
 class Device;
 class DeviceContext;
+// class HashBuffer;
 
 // A GPU memory allocator that implements a 'best-fit with coalescing'
 // algorithm.
@@ -60,26 +62,21 @@ class GPUBFCAllocator : public BFCAllocator {
                   const string& name);
   GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
                   const GPUOptions& gpu_options, const string& name);
-  virtual ~GPUBFCAllocator() {
-    const std::string invalid_swap_filename = "/tmp/invalid_swap.txt";
-    std::fstream fout(invalid_swap_filename, fout.out);
-    if (!fout.is_open()) {
-      LOG(ERROR) << "Fail to open invalid swap file";
-      return;
-    }
-    for (auto& name : invalid_swap_) {
-      fout << name << "\n";
-    }
-  }
+  virtual ~GPUBFCAllocator();
 
-  void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf);
+  // void GetOrCreateHashBuffer(const Tensor* tensor, const string& tensor_name, HashBuffer** hash_buf) override;
 
-  void RecordTensorAccess(const string& tensor_name, const uint64 _time);
+  void RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf) override;
 
-  void Notify(TensorBuffer* tensor_buf);
+  void RecordTensorAccess(const string& tensor_name, TensorBuffer* tensor_buf, const uint64 _time) override;
+
+  void Notify(TensorBuffer* tensor_buf) override;
+
+  void CheckInput(const string& tensor_name, TensorBuffer* tensor_buf, bool* flag, bool before) override;
 
  private:
 
+  // TODO(px): remove this to bit-wise
   enum SwapStatus {
     IN,
     OUT,
@@ -167,23 +164,39 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void SwapOut(const string& tensor_name, const int64 retain_size);
 
+  /* inline void SwapOutNaive(const string& tensor_name) {
+    SwapOutNaive(tensor_name, 0);
+  } */
+
+  // API using the naive cuda_runtime api
+/*   void SwapOutNaive(const string& tensor_name, const int64 retain_size);
+  void SwapInNaive(const string& tensor_name); */
+
   void LoadSwapPolicy();
 
   mutable std::mutex lock_;
 
   std::mutex mu_;
-
-  typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;
+  
+  typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex> > condition_variable_and_mutex;  
 
   struct TensorSwapParams {
     string tensor_name;
     Device* device;
     DeviceContext* device_context;
-    TensorBuffer* tensor_buffer;
+    TensorBuffer* tensor_buffer;  // TODO(px): move this to std::hash<TensorBuffer*>()(tensor_buffer), as tensor_buffer may not exist during the real running.
+    // HashBuffer* hash_buffer;
     std::pair<void*, int64> swapped_cpu_buffer; // set if buffer swapped out
     std::pair<void*, int64> swapped_gpu_buffer; // set if buffer swapped out
+    void* in_gpu_src;
     condition_variable_and_mutex cv_mu;
     volatile int data_ready; // false if buffer swapped out
+    // for two usage:
+    // 1. when swap out a tensor, need to deallocate it after enqueuing computation (do once)
+    // 2. when swap out a tensor, need to waitfor d2h stream after enqueuing cmoputation (do once)
+    // bool need_deallocate;
+    // when meeting swap-in tensor, need to make comp.stream wait for h2d stream (do once)
+    bool need_in_addr;
     bool can_deallocate_after_swap_out;
     bool then_deallocate;
     float out_fraction;
@@ -201,6 +214,13 @@ class GPUBFCAllocator : public BFCAllocator {
     TensorSwapParams* out_params;  // swap params of in_tensor
     TensorSwapParams* in_params;   // swap params of this tensor
   };
+  
+
+  // std::unordered_map<size_t, HashBuffer*> hash_bufs_;
+  // GPUBFCAllocator own the underlying HashBuffer
+  // std::unordered_map<TensorBuffer*, HashBuffer*> hash_bufs_; // as the buf exist at pre-run time, so can use it as the key
+  // std::unordered_map<std::string, HashBuffer*> hash_bufs_;
+
 
   std::unordered_map<std::string, TriggerInfo> swap_triggers_;
 
@@ -208,23 +228,23 @@ class GPUBFCAllocator : public BFCAllocator {
 
   std::unordered_map<const TensorBuffer*, std::string> buffer_tensor_map_;
 
-  std::unordered_set<std::string> invalid_swap_;
+  // std::unordered_set<std::string> invalid_swap_;
 
   std::unordered_map<std::string, std::vector<uint64> > tensor_access_times_ GUARDED_BY(lock_);
 
-  static cudaStream_t device_to_device_stream_;
+  // static cudaStream_t device_to_device_stream_;
 
-  static cudaStream_t host_to_device_stream_;
+  // static cudaStream_t host_to_device_stream_;
 
-  static cudaStream_t device_to_host_stream_;
+  // static cudaStream_t device_to_host_stream_;
 
-  static cudaEvent_t cuda_event_;
+  // static cudaEvent_t cuda_event_;
 
-  static void CUDART_CB CudaCallback(cudaStream_t stream, cudaError_t status, void* done) {
+  /* static void CUDART_CB CudaCallback(cudaStream_t stream, cudaError_t status, void* done) {
     auto func = static_cast<std::function<void()>* >(done);
     (*func)();
     delete func;
-  }
+  } */
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUBFCAllocator);
 };

@@ -738,13 +738,15 @@ Status DirectSession::Run(const RunOptions& run_options,
     LogMemory::RecordStep(step_id, run_state_args.handle);
   }
 
-  auto now_in_usec = []() -> int64 {return Env::Default()->NowMicros(); };
-  int64 start_time = now_in_usec();
+  // auto now_in_usec = []() -> int64 {return Env::Default()->NowMicros(); };
+  // int64 start_time = now_in_usec();
 
+  // LOG(INFO) << "Step id: " << step_id;
+  
   TF_RETURN_IF_ERROR(RunInternal(step_id, run_options, &call_frame,
                                  executors_and_keys, run_metadata));
 
-  int64 end_time = now_in_usec();
+  // int64 end_time = now_in_usec();
 
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {

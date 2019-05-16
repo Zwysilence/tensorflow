@@ -47,6 +47,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+// #include "tensorflow/core/framework/tensor_buffer_hash.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/variant_op_registry.h"
 #include "tensorflow/core/graph/types.h"
@@ -70,6 +71,8 @@ limitations under the License.
 #if !defined(PLATFORM_GOOGLE)
 #include "cuda/cuda_config.h"
 #endif
+
+// #define _DEBUG
 
 namespace tensorflow {
 
@@ -452,6 +455,59 @@ string BaseGPUDevice::ComputeOpKernelDebugString(const OpKernel& op_kernel,
                          "]");
 }
 
+/*
+void BaseGPUDevice::GetInputTensors(OpKernelContext* context, 
+                                    HashBufferVector* out_vec) {
+  for (const TensorValue& tensor_val : *context->params_->inputs) {
+    const std::string& tensor_name = tensor_val.name;
+    const Tensor* tensor = tensor_val.tensor;
+    if (tensor == nullptr) {
+      // if (tensor_name.empty()) LOG(INFO) << "Weird tensor";
+      continue;
+    }
+    if (tensor->buf_ == nullptr) continue;
+    // TODO(px): fix why some tensor has no name but name field has beed set in tensor_val
+    // if (tensor->Name().compare(tensor_name) != 0) {
+    //   LOG(INFO) << "Weird tensor name: " << tensor_name << " v.s. " << tensor->Name();
+    // }
+
+    HashBuffer* hash_buf = nullptr;
+    gpu_allocator_->GetOrCreateHashBuffer(tensor, tensor_name, &hash_buf);
+    if (hash_buf == nullptr) continue;
+
+    out_vec->push_back(hash_buf);
+  }
+}*/
+
+/*void BaseGPUDevice::IncreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers) {
+  if (input_buffers.size() == 0) return;
+  em_->ThenRecordUsingCount(stream, input_buffers, true);
+  // LOG(INFO) << "Push " << input_buffers.size() << " into IncreaseUsingCount";
+}
+
+void BaseGPUDevice::DecreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers) {
+  if (input_buffers.size() == 0) return;
+  em_->ThenRecordUsingCount(stream, input_buffers, false);
+  // LOG(INFO) << "Push " << input_buffers.size() << " into DecreaseUsingCount";
+}*/
+
+/*-------------------------------*/
+
+void BaseGPUDevice::CheckInputs(OpKernelContext* context,
+                                bool* flag,
+                                bool before) {
+  for (const TensorValue& tensor_val : *context->params_->inputs) {
+    const std::string& tensor_name = tensor_val.name;
+    const Tensor* tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    if (tensor->buf_ == nullptr) continue;
+
+    gpu_allocator_->CheckInput(tensor_name, tensor->buf_, flag, before);
+  }
+}
+
+
+
 void BaseGPUDevice::ComputeHelper(OpKernel* op_kernel,
                                   OpKernelContext* context) {
   GPUDeviceContext* gpu_device_context = device_contexts_[0];
@@ -503,7 +559,40 @@ void BaseGPUDevice::ComputeHelper(OpKernel* op_kernel,
     }
   }
   se::cuda::ScopedActivateExecutorContext scoped_activation{stream->parent()};
+  // HashBufferVector input_buffers;
+  // GetInputTensors(context, &input_buffers);
+  // IncreaseUsingCount(stream, input_buffers);
+  bool wait_dth = false;
+  bool wait_htd = false;
+  CheckInputs(context, &wait_htd, true/*before*/);
+  // when need a swap-in tensor first time, need to make this comp wait for h2d stream to 
+  // sure that the swap-in has finished (just need to do once)
+  // TODO(px): make sure that this waitfor only do once
+  if (wait_htd) {
+    // if inputs include tensors which are in swappin-in, we need to wait the h2d stream
+    se::Stream* htd_stream = gpu_device_context->host_to_device_stream();
+    stream->ThenWaitFor(htd_stream);
+  #ifdef _DEBUG
+    LOG(INFO) << "WaitFor host_to_device_stream";
+  #endif
+  }
   op_kernel->Compute(context);
+  // DecreaseUsingCount(stream, input_buffers);
+
+  CheckInputs(context, &wait_dth, false/*before*/);
+  // when just swap out a tensor, need to make this comp wait for d2h stream to make sure
+  // the next computation doesn't start until finising the swapping-out
+  // TODO(px): release swapped-out tensor's memory here, need to guarantee no computation which
+  // use allocate this memory enqueue into stream before we wait d2h stream
+  if (wait_dth) {
+    se::Stream* dth_stream = gpu_device_context->device_to_host_stream();
+    stream->ThenWaitFor(dth_stream);
+  #ifdef _DEBUG
+    LOG(INFO) << "WaitFor device_to_host_stream";
+  #endif
+  }
+  
+
   if (context->status().ok()) {
     if (sync_every_op_) {
       // Note: GPUUtil::Sync() only syncs the default stream.
