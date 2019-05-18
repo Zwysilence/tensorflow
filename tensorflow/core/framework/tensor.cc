@@ -53,10 +53,13 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/platform/variant_coding.h"
 
+#include <cuda_runtime.h>
+
 #include <string>
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <fstream>
 
 namespace tensorflow {
 
@@ -113,7 +116,7 @@ class Buffer : public BufferBase {
   size_t size() const override { return sizeof(T) * elem_; }
   void RecordTensorAccess(const string & tensor_name, const uint64 time_) {
     //if (alloc_ == nullptr) return;
-    alloc_->RecordTensorAccess(tensor_name, time_);
+    alloc_->RecordTensorAccess(tensor_name, this, time_);
   }
 
   void RecordSwapContext(const TensorParams &params) {
@@ -148,6 +151,10 @@ class Buffer : public BufferBase {
 
   string AllocatorName() {
     return alloc_->Name();
+  }
+
+  Allocator* GetAllocator() {
+    return alloc_;
   }
 
  private:
@@ -675,11 +682,23 @@ void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   buf_->RecordTensorAccess(tensor_name, time_);
 }
 
+void* Tensor::data() {
+  return buf_->data();
+}
+
+void Tensor::set_data(void* data) {
+  buf_->set_data(data);
+}
+
 string Tensor::AllocatorName() {
   if (buf_ == nullptr) return "";
   return buf_->AllocatorName();
 }
 
+Allocator* Tensor::GetAllocator() {
+  if (buf_ == nullptr) return nullptr;
+  return buf_->GetAllocator();
+}
 int64 Tensor::BufferSize() {
   if (buf_ == nullptr) return 0;
   return buf_->BufferSize();
@@ -687,6 +706,7 @@ int64 Tensor::BufferSize() {
 
 void Tensor::RecordSwapContext(const TensorParams &params) {
   if (buf_ == nullptr) return;
+  SetName(params.name);
   buf_->RecordSwapContext(params);
 }
 
@@ -1029,7 +1049,81 @@ string SummarizeArray(int64 limit, int64 num_elts,
   if (num_elts > limit) strings::StrAppend(&ret, "...");
   return ret;
 }
+
+template <typename T>
+void LogArray(int64 limit, int64 num_elts,
+              const TensorShape& tensor_shape, const char* data) {
+  string ret;
+  const T* array = reinterpret_cast<const T*>(data);
+
+  const gtl::InlinedVector<int64, 4> shape = tensor_shape.dim_sizes();
+  if (shape.empty()) {
+    for (int64 i = 0; i < limit; ++i) {
+      if (i > 0) strings::StrAppend(&ret, " ");
+      strings::StrAppend(&ret, PrintOneElements(array[i]));
+    }
+    if (num_elts > limit) strings::StrAppend(&ret, "...");
+    // return ret;
+  }
+  int64 data_index = 0;
+  const int shape_size = tensor_shape.dims();
+  PrintOneDim(0, shape, limit, shape_size, array, &data_index, &ret);
+
+  if (num_elts > limit) strings::StrAppend(&ret, "...");
+  return ret;
+}
 }  // namespace
+
+string Tensor::GetValue(int64 max_entries, void* h_data) const {
+  const int64 num_elts = NumElements();
+  size_t limit = std::min(max_entries, num_elts);
+  const char* ch_data = static_cast<const char*>(h_data);
+
+  switch (dtype())
+  {
+    case DT_HALF:
+      return SummarizeArray<Eigen::half>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_FLOAT:
+      return SummarizeArray<float>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_DOUBLE:
+      return SummarizeArray<double>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_UINT32:
+      return SummarizeArray<uint32>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_INT32:
+      return SummarizeArray<int32>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_UINT8:
+    case DT_QUINT8:
+      return SummarizeArray<uint8>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_UINT16:
+    case DT_QUINT16:
+      return SummarizeArray<uint16>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_INT8:
+    case DT_QINT8:
+      return SummarizeArray<int8>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_UINT64:
+      return SummarizeArray<uint64>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_INT64:
+      return SummarizeArray<int64>(limit, num_elts, shape_, ch_data);
+      break;
+    case DT_BOOL:
+      // TODO(tucker): Is it better to emit "True False..."?  This
+      // will emit "1 0..." which is more compact.
+      return SummarizeArray<bool>(limit, num_elts, shape_, ch_data);
+      break;
+    default:
+      // LOG(ERROR) << "Can not get the type of " << tensor_name;
+      break;
+  }
+}
 
 string Tensor::SummarizeValue(int64 max_entries) const {
   const int64 num_elts = NumElements();
@@ -1123,6 +1217,101 @@ string Tensor::DebugString() const {
   return strings::StrCat("Tensor<type: ", DataTypeString(dtype()),
                          " shape: ", shape().DebugString(),
                          " values: ", SummarizeValue(3), ">");
+}
+
+void Tensor::DebugStringToFile(const string& tensor_name, const int64 step_id, bool is_gpu_tensor) {
+  const string log_dir = "/vpublic01/frog/vfonel/tensor_value/";
+
+  if (data() == nullptr) {
+    LOG(ERROR) << "Tensor: " << tensor_name << " data is nullptr!";
+    return;
+  }
+
+  void* h_data;
+  const int64 num_elts = NumElements();
+  // size_t total_bytes = TotalBytes();
+  int64 max_entries = 100;
+  size_t limit = std::min(max_entries, num_elts);
+  std::fstream fout;
+  string log_filename;
+
+  cudaStream_t tmp_s;
+  if (is_gpu_tensor) {
+    void* d_data = data();
+    size_t num_bytes_tocopy = limit * sizeof(float);  // always use this bytes to copy even it's less or more possiblly
+    cudaError_t s;
+    for (int i = 0; i < 2; ++i) {
+      // firstly use async to copy
+      if (i == 0) {       
+        if (cudaStreamCreate(&tmp_s) != cudaSuccess) {
+          LOG(ERROR) << "Failed to create a tmp stream for data transfer!";
+          return;
+        }
+        // maybe we should use the cuda_host_bfc to alloc this memory to avoid high overhead of cudaHostAlloc
+        if (cudaHostAlloc((void**)&h_data, num_bytes_tocopy, cudaHostAllocDefault) != cudaSuccess) {
+          LOG(ERROR) << "Failed to request host pinned memory for " << tensor_name;
+          return;
+        }
+        s = cudaMemcpyAsync(h_data, d_data, num_bytes_tocopy, cudaMemcpyDeviceToHost, tmp_s);
+        if (s != cudaSuccess) {
+          LOG(ERROR) << "Error when copy " << tensor_name << " back async!";
+          return;
+        } else {
+          LOG(INFO) << "Success copy " << tensor_name << " back async!";
+          if (cudaStreamSynchronize(tmp_s) != cudaSuccess) {
+            LOG(ERROR) << "Can not sync the copy back stream!";
+            return;
+          }
+          // cudaFreeHost(h_data);
+          // cudaStreamDestroy(tmp_s);
+        }
+      } else {
+        h_data = (void*)malloc(num_bytes_tocopy);
+        // this explicit data copy will sync the computation implicitly
+        // we use async copy to avoid this implicit synchronization
+        // explicit sync to see if any diff
+        s = cudaDeviceSynchronize();        
+        if (s != cudaSuccess) {
+          LOG(ERROR) << "Failed to synchronize the device";
+          return;
+        }
+        s = cudaMemcpy(h_data, d_data, num_bytes_tocopy, cudaMemcpyDeviceToHost);
+        if (s != cudaSuccess) {
+          LOG(ERROR) << "Error when copy " << tensor_name << " back sync!";
+          return;
+        } else {
+          LOG(INFO) << "Success copy " << tensor_name << " back sync!";
+        }
+      }
+
+      // Extract the tensor value from h_data
+      string ret = GetValue(max_entries, h_data);
+      if (i == 0) {
+        cudaFreeHost(h_data);
+        cudaStreamDestroy(tmp_s);
+        log_filename = log_dir+tensor_name+"_"+std::to_string(step_id)+"_async.txt";
+        // std::fstream log_file(log_filename, log_file.out);
+      } else {
+        free(h_data);
+        log_filename = log_dir+tensor_name+"_"+std::to_string(step_id)+"_sync.txt";
+      }
+      fout.open(log_filename, fout.out);
+      if (!fout.is_open()) {
+        LOG(ERROR) << "Failed to open " << log_filename;
+        return;
+      }
+      fout << "Tensor\t" << tensor_name << "\n";
+      fout << "\t\ttype:\t" << DataTypeString(dtype()) << "\n";
+      fout << "\t\tshape:\t" << shape().DebugString() << "\n";
+      fout << "\t\tvalues:" << ret << "\n";
+      fout.close();
+    }
+  } else {
+    // the tensor is aside on CPU
+    // ret = SummarizeValue(limit);
+    LOG(WARNING) << "CPU tensor not implemented!";
+    return;
+  }
 }
 
 void Tensor::FillDescription(TensorDescription* description) const {

@@ -442,6 +442,10 @@ class Tensor {
   /// A human-readable summary of the tensor suitable for debugging.
   string DebugString() const;
 
+  void DebugStringToFile(const string& tensor_name, const int64 step_id, bool is_gpu_tensor=true);
+
+  string GetValue(int64 max_entries, void* h_data) const;
+
   /// Fill in the `TensorDescription` proto with metadata about the
   /// tensor that is useful for monitoring and debugging.
   void FillDescription(TensorDescription* description) const;
@@ -470,6 +474,8 @@ class Tensor {
 
   string AllocatorName();
 
+  Allocator* GetAllocator();
+
   int64 BufferSize();
 
   void RecordSwapContext(const TensorParams &params);
@@ -479,6 +485,12 @@ class Tensor {
   void DecrementUsingCount();
 
   void SetName(const string& name) { name_ = name; }
+
+  void* data();
+
+  void set_data(void* dt);
+
+  TensorBuffer* buffer() const { return buf_; }
 
   string Name() const { return name_; }
  private:
@@ -508,6 +520,8 @@ class Tensor {
   friend class TensorTestHelper;      // For access to set_shape
   friend class OpKernelContext;       // For access to RefCountIsOne().
   friend class ScopedAllocator;       // For access to buf_.
+  friend class BaseGPUDevice;         // For access to buf_
+  friend class GPUBFCAllocator;       // For access to buf_
   friend class XlaTensorBuffer;  // For access to the private constructor taking
                                  // the buffer
   template <typename Device, typename T>
@@ -589,6 +603,8 @@ class TensorBuffer : public core::RefCounted {
   virtual int64 BufferSize() { return 0; }
 
   virtual string AllocatorName() { return ""; }
+
+  virtual Allocator* GetAllocator() { return nullptr; }
 
   virtual void RecordSwapContext(const TensorParams &params) {}
 
