@@ -24,7 +24,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
-#include <fstream>
 #include <thread>
 #include <chrono>
 #include <cuda_runtime.h>
@@ -47,7 +46,7 @@ using perftools::gputools::DeviceMemoryBase;
 
 namespace tensorflow {
 
-std::string GetEnv(const string& env_name) {
+std::string GetEnv(const std::string& env_name) {
   const char* env_p = std::getenv(env_name.c_str());
   if (env_p == nullptr) return "";
   return env_p;
@@ -72,7 +71,8 @@ GPUBFCAllocator::GPUBFCAllocator(CudaGpuId cuda_gpu_id, size_t total_memory,
     : BFCAllocator(
           new GPUMemAllocator(
               GpuIdUtil::ExecutorForCudaGpuId(cuda_gpu_id).ValueOrDie()),
-          total_memory, gpu_options.allow_growth(), name) {
+          //total_memory, gpu_options.allow_growth(), name) {
+          total_memory, true, name) {
       LoadSwapPolicy();
       /* cudaStreamCreate(&device_to_device_stream_);
       cudaStreamCreate(&host_to_device_stream_);
@@ -273,7 +273,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
   string out_tensor_name, in_trigger_name;
   int out_trigger_count, in_trigger_count;
   int out_tensor_total_access, in_trigger_total_access;
-  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count 
+  while(fin >> out_tensor_name >> out_tensor_total_access >> out_trigger_count
             >> in_trigger_name >> in_trigger_total_access >> in_trigger_count) {
     if (out_tensor_name[0] == '#') {
       continue;
@@ -299,9 +299,10 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_in_trigger.access_count = 0;
     swap_in_trigger.total_access_count = in_trigger_total_access;
   }
+  fin.close();
 }
 
-Status PrepareCopy(Device* device, const DeviceContext* ctx, 
+Status PrepareCopy(Device* device, const DeviceContext* ctx,
     const DeviceBase::GpuDeviceInfo** dev_info, gpu::Stream** stream) {
   if (device == nullptr) {
     return errors::Internal("Unexpected null device.");
@@ -339,6 +340,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     std::lock_guard<std::mutex> l(*(cv_mu.second));
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   }
+
+  LOG(INFO) << "Start to swap out: " << tensor_name;
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   // HashBuffer* hash_buffer = swap_params.hash_buffer;

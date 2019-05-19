@@ -6,9 +6,15 @@
 
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/framework/tensor.h"
 
 namespace tensorflow {
+
+const std::string recompute_policy_env = "RECOMPUTE_POLICY_FILE";
+
+static std::string GetEnv(const std::string& env) {
+  const char* val = std::getenv(env.c_str());
+  return val ? val : "";
+}
 
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
   if (tensor_recompute_params_.count(tensor_name)) {
@@ -42,25 +48,73 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
   }
 }
 
+void RecomputeHelper::SetRecomputing(const std::vector<std::string>& recompute_nodes) {
+  int cnt = 0;
+  for (auto& node_name : recompute_nodes) {
+    for (auto& tensor_name : node_to_tensors_[node_name]) {
+      auto& params = tensor_recompute_params_[tensor_name];
+      auto& cv_mu = params.cv_mu;
+      std::lock_guard<std::mutex> l(*(cv_mu.second));
+      if (params.data_ready == DataStatus::OUT) {
+        params.data_ready = DataStatus::RECOMPUTING;
+        cnt++;
+      }
+    }
+  }
+  LOG(INFO) << "Size of recompute nodes (within node that hasn't recompute tensor) " << recompute_nodes.size();
+  LOG(INFO) << "Size of recompute nodes (without node that hasn't recompute tensor) " << cnt+1;
+}
+
+void RecomputeHelper::SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed) {
+  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first))
+    return;
+  recomputed_tensors_[target][recomputed.first] = *(recomputed.second);
+  if (is_ref) {
+    LOG(FATAL) << "entry is a reference, handle it now.";
+  }
+}
+
 void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
-  if (!recompute_calls.count(tensor_name)) {
+  if (!recompute_calls_.count(tensor_name)) {
     LOG(FATAL) << "Don't have the recompute call for " << tensor_name;
   }
 
   auto& params = tensor_recompute_params_[tensor_name];
   auto& cv_mu = params.cv_mu;
   volatile int* ready = &(params.data_ready);
-  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  std::unique_lock<std::mutex> ul(*(cv_mu.second));
   if (*ready == DataStatus::OUT) {
+    {
+      std::lock_guard<std::mutex> l(mu_);
+      if (*ready != DataStatus::OUT) return;
+    }
     LOG(INFO) << "Recompute " << tensor_name;
     *ready = DataStatus::RECOMPUTING;
-    recompute_calls[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, &cv_mu, ready]() {
-        std::unique_lock<std::mutex> l(*(cv_mu.second));
-        *ready = DataStatus::IN;
-        cv_mu.first->notify_all();
-        LOG(INFO) << "Recompute done " << tensor_name;
+    ul.unlock();
+    recompute_calls_[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, this]() {
+        SetRecomputedTensors(tensor_name);
       });
   }
+}
+
+void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
+  std::lock_guard<std::mutex> l(mu_);
+  auto& tensors = recomputed_tensors_[target];
+  for (auto& t : tensors) {
+    auto& params = tensor_recompute_params_[t.first];
+    auto& cv_mu = params.cv_mu;
+    std::unique_lock<std::mutex> ul(*(cv_mu.second));
+    if (params.data_ready != DataStatus::IN) {
+      if (params.buf->data() != nullptr)
+        LOG(FATAL) << "Buffer data should be null";
+      params.buf->set_data(t.second.data());
+      t.second.set_data(nullptr);
+      params.data_ready = DataStatus::IN;
+      cv_mu.first->notify_all();
+      LOG(INFO) << "Recompute " << t.first << " done";
+    }
+  }
+  tensors.clear();
 }
 
 void RecomputeHelper::RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor) {
@@ -71,13 +125,15 @@ void RecomputeHelper::RecordTensorBuffer(const std::string& tensor_name, Tensor*
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
-  recompute_calls[tensor_name] = std::move(call);
+  recompute_calls_[tensor_name] = std::move(call);
 }
 
 void RecomputeHelper::IncrementUsingCount(const std::string& tensor_name) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
   auto& params = tensor_recompute_params_[tensor_name];
-  std::lock_guard<std::mutex> l(mu_);
+  auto& cv_mu = params.cv_mu;
+  //std::lock_guard<std::mutex> l(mu_);
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.using_count++;
 }
 
@@ -94,7 +150,7 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
     buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
     params.then_delete = false;
-    LOG(INFO) << "Deleted " << tensor_name;
+    LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
   } else if (params.using_count < 0) {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
     params.using_count = 0;
@@ -102,12 +158,12 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
-  LOG(INFO) << "Deleting memory of " << tensor_name;
   auto& params= tensor_recompute_params_[tensor_name];
   if (!params.buf) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
+  LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
   TensorBuffer* buf = params.buf;
   Allocator* alloc = buf->GetAllocator();
   auto& cv_mu = params.cv_mu;
@@ -116,15 +172,21 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     alloc->DeallocateRaw(buf->data());
     buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
-    LOG(INFO) << "Deleted " << tensor_name;
-  } else {
+    LOG(INFO) << "Deleted " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
+  } else if (params.using_count > 0) {
     params.then_delete = true;
+    params.data_ready = DataStatus::OUT;
+  } else {
+    LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
   }
-  LOG(INFO) << "Out delete memory of " << tensor_name;
 }
 
 void RecomputeHelper::LoadRecomputePolicy() {
-  std::string policy_file = "/home/frog/vfonel/recompute_policy.txt";
+  std::string policy_file = GetEnv(recompute_policy_env);
+  if (policy_file.empty()) {
+    LOG(INFO) << "No recompute policy specified";
+    return;
+  }
   std::fstream fin(policy_file, fin.in);
   if (!fin.is_open()) {
     LOG(INFO) << "open " << policy_file << " failed.";
@@ -146,6 +208,8 @@ void RecomputeHelper::LoadRecomputePolicy() {
     params.buf = nullptr;
     params.using_count = 0;
     params.then_delete = false;
+    string node_name = target_tensor.substr(0, target_tensor.find(':'));
+    node_to_tensors_[node_name].push_back(target_tensor);
 
     auto& delete_trigger = triggers_[target_tensor];
     delete_trigger.tensor_name = target_tensor;
@@ -162,6 +226,7 @@ void RecomputeHelper::LoadRecomputePolicy() {
       compute_trigger.recompute_tensors[compute_cnt-1].push_back(target_tensor);
     }
   }
+  fin.close();
   LOG(INFO) << "Recompute policy file loaded.";
 }
 

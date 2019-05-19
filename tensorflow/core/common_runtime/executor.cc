@@ -81,8 +81,6 @@ std::string GetEnv(const std::string& env_name)
 //std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out);
 static std::fstream tensor_access_fout;
 
-
-
 namespace tensorflow {
 namespace {
 
@@ -841,7 +839,8 @@ class ExecutorState {
           val_field_is_set(other.val_field_is_set),
           alloc_attr(other.alloc_attr),
           device_context(other.device_context),
-          tensor_name(other.tensor_name),
+          tensor_name(other.tensor_name) ,
+          readable_name(other.readable_name) ,
           frame(other.frame),
           iter(other.iter) {
       if (val_field_is_set) {
@@ -863,6 +862,7 @@ class ExecutorState {
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
       tensor_name = other.tensor_name;
+      readable_name = other.readable_name;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -882,6 +882,7 @@ class ExecutorState {
       alloc_attr = other.alloc_attr;
       device_context = other.device_context;
       tensor_name = other.tensor_name;
+      readable_name = other.readable_name;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -922,9 +923,12 @@ class ExecutorState {
 
     string tensor_name;
 
+    string readable_name;
+
     FrameState* frame = nullptr;
 
     int64 iter = -1;
+
   };
 
   // Contains a value for [node->id()] for the device context assigned by the
@@ -957,7 +961,7 @@ class ExecutorState {
     // edge. The latter node is never run concurrently with the former node.
     Entry* input_tensors;
 
-    // use for recompute
+    // use for reomcpute
     Entry* recompute_input_tensors;
 
     // The number of outstanding ops for each iteration.
@@ -997,7 +1001,7 @@ class ExecutorState {
     }
 
     ~IterationState() { 
-      delete[] input_tensors;
+      delete[] input_tensors; 
       delete[] recompute_input_tensors;
     }
 
@@ -1298,6 +1302,14 @@ class ExecutorState {
 
   volatile bool recomputing_ = false;
 
+  std::mutex recompute_mu_;
+
+  std::condition_variable cv_;
+
+  volatile bool recomputing_ = false;
+
+  std::unordered_map<string, int> node_names_map_;
+
   // Mapping from frame name to outstanding frames. A new frame is created
   // at some iteration of an active frame. So the unique key for the new
   // child frame is composed of the name of the parent frame, the iteration
@@ -1384,7 +1396,7 @@ class ExecutorState {
   }
 
   Entry* GetRecomputeInputTensors(FrameState* input_frame,
-                                  int64 input_iter) const NO_THREAD_SAFETY_ANALYSIS {
+                         int64 input_iter) const NO_THREAD_SAFETY_ANALYSIS {
     return input_frame->GetIteration(input_iter)->recompute_input_tensors;
   }
 
@@ -1396,6 +1408,8 @@ class ExecutorState {
 
   // use for recomputation
   void MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, EntryVector* outputs);
+
+  void SaveRecomputeTensors(const TaggedNode& tagged_node, EntryVector* outputs);
 
   void IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs);
 
@@ -1413,9 +1427,11 @@ class ExecutorState {
 
   void FindNodes(const std::vector<std::string>& tensors, std::unordered_set<const Node*>* nodes);
 
-  void ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, int>* node_to_slot);
+  void ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, std::unordered_set<int>>* node_to_slot);
 
-  Node* FindNode(const std::string& tensor_name);
+  void ParseTensorName(const std::string& tensor_name, std::string* node_name, int* slot);
+
+  Node* FindNodeName(const std::string& tensor_name);
 };
 
 // The format of tensor is "node_id:output_slot", target_tensor is in the "iter"-th iteration of "frame"
@@ -1425,10 +1441,13 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   cv_.wait(l, [pflag] { return !(*pflag); });
   recomputing_ = true;
   std::unordered_set<const Node*> feed_nodes;
-  std::unordered_map<const Node*, int> node_to_slot;
+  std::unordered_map<const Node*, std::unordered_set<int>> node_to_slot;
   FindNodes(feed_tensors, &feed_nodes);
   ParseTensorNames(feed_tensors, &node_to_slot);
-  const Node* target_node = FindNode(target_tensor);
+  string target_node_name;
+  int target_slot;
+  ParseTensorName(target_tensor, &target_node_name, &target_slot);
+  const Node* target_node = FindNodeName(target_node_name);
   std::unordered_set<const Node*> recompute_nodes;
   std::vector<TaggedNode> recompute_tagged_nodes;
   std::vector<TaggedNode> feed_tagged_nodes;
@@ -1436,31 +1455,6 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   recompute_tagged_nodes.emplace_back(target_node, frame, iter, false);
   TaggedNodeSeq ready;
   ReverseBFS(feed_nodes, &feed_tagged_nodes, &recompute_nodes, &recompute_tagged_nodes, &ready);
-  /*
-  std::cout << "Target node : " << target_node->name() << "\n\n";
-  std::cout << "Out nodes of target node: ";
-  for (auto e : target_node->out_edges()) {
-    if (e->IsControlEdge()) continue;
-    std::cout << e->dst()->name() << " ";
-  }
-  std::cout << "\n";
-  std::cout << "Feed nodes : \n";
-  for (auto n : feed_nodes) {
-    std::cout << n->name() << " ";
-  }
-  std::cout << "\n\n";
-  std::cout << "Recompute nodes: \n";
-  for (auto n : recompute_nodes) {
-    std::cout << n->name() << ": ";
-    std::vector<const Edge*> input_edges;
-    auto status = n->input_edges(&input_edges); // not include control-dependency
-    for (auto e : input_edges) {
-      std::cout << e->src()->name() << " ";
-    }
-    std::cout << " num_outputs = " << n->num_outputs() << "\n";
-    std::cout << "\n";
-  }
-  */
 
   // save recompute context
   RecomputeContextManager* rcm = RecomputeContextManager::GlobalRecomputeContextManager();
@@ -1486,10 +1480,18 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   }
   // remove control-dependencies from nodes which are not recompute nodes.
   RemoveUnrelatedControlDependencies(recompute_nodes, recompute_tagged_nodes);
+  std::vector<std::string> recompute_node_names;
+  recompute_node_names.reserve(recompute_nodes.size());
+  for (auto node : recompute_nodes) {
+    recompute_node_names.push_back(node->name());
+  }
+  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_node_names);
 
   // TODO: handle
   for (auto& tn : feed_tagged_nodes) {
-    tn.input_frame->ReActivateNodes(tn.node, node_to_slot[tn.node], tn.input_iter, rh, &ready);
+    for (auto slot : node_to_slot[tn.node]) {
+      tn.input_frame->ReActivateNodes(tn.node, slot, tn.input_iter, rh, &ready);
+    }
   }
 
   num_outstanding_ops_.fetch_add(ready.size(), std::memory_order_relaxed);
@@ -1515,32 +1517,41 @@ void ExecutorState::RemoveUnrelatedControlDependencies(const std::unordered_set<
   }
 }
 
-void ExecutorState::ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, int>* node_to_slot) {
-  const Graph* g = impl_->graph_.get();
+void ExecutorState::ParseTensorNames(const std::vector<std::string>& tensors, std::unordered_map<const Node*, std::unordered_set<int>>* node_to_slot) {
   for (auto& name : tensors) {
     auto pos = name.find(':');
     if (pos != std::string::npos) {
-      int node_id = stoi(name.substr(0, pos));
+      string node_name = name.substr(0, pos);
       int slot_id = stoi(name.substr(pos+1));
-      node_to_slot->insert({g->FindNodeId(node_id), slot_id});
+      (*node_to_slot)[FindNodeName(node_name)].insert(slot_id);
     } else {
-      int node_id = stoi(name);
-      node_to_slot->insert({g->FindNodeId(node_id), 0});
+      (*node_to_slot)[FindNodeName(name)].insert(0);
     }
   }
 }
 
+void ExecutorState::ParseTensorName(const std::string& tensor_name, std::string* node_name, int* slot) {
+    auto pos = tensor_name.find(':');
+    if (pos != std::string::npos) {
+      *node_name = tensor_name.substr(0, pos);
+      *slot = stoi(tensor_name.substr(pos+1));
+    } else {
+      *node_name = tensor_name;
+      *slot = 0;
+    }
+}
+
 void ExecutorState::FindNodes(const std::vector<std::string>& tensors, std::unordered_set<const Node*>* nodes) {
-  const Graph* g = impl_->graph_.get();
   for (auto& name : tensors) {
-    int id = stoi(name.substr(0, name.find(':')));
-    nodes->insert(g->FindNodeId(id));
+    string node_name = name.substr(0, name.find(':'));
+    nodes->insert(FindNodeName(node_name));
   }
 }
 
-Node* ExecutorState::FindNode(const std::string& tensor_name) {
+Node* ExecutorState::FindNodeName(const std::string& name) {
+  if (!node_names_map_.count(name)) return nullptr;
   const Graph* g = impl_->graph_.get();
-  return g->FindNodeId(stoi(tensor_name.substr(0, tensor_name.find(':'))));
+  return g->FindNodeId(node_names_map_.at(name));
 }
 
 void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes, 
@@ -1595,7 +1606,6 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
   }
 }
 
-
 void ExecutorState::IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs) {
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
@@ -1618,7 +1628,7 @@ void ExecutorState::DecrementUsingCountOfTensors(const TaggedNode& tagged_node, 
   }
 }
 
-
+// TODO: delete code that is redundant
 void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const TensorValueVec* inputs, const Entry* input_entries, bool stats_flag) {
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
   uint64 time_ = Env::Default()->NowMicros();
@@ -1639,7 +1649,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   static bool flag = true;
   static int num_nodes_ = -1;
   if (flag) {
-    if (num_nodes_str != nullptr &&
+    if (num_nodes_str != nullptr && 
         strcmp(num_nodes_str, "") != 0) {
       if (!strings::safe_strto32(num_nodes_str, &num_nodes_)) {
         LOG(WARNING) << "Invalid value for env-var: TF_MODEL_NUM_NODES";
@@ -1665,7 +1675,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
       }
     }
     auto tensor = tensor_val.tensor;
-    if (tensor == nullptr) continue;
+    if (tensor == nullptr) continue; 
     tensor->RecordTensorAccess(tensor_val.name, time_);
 
     if (tensor_val.name.empty()) continue;
@@ -1673,6 +1683,22 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     // const NodeItem& item = *gview.node(stoi(input_entries[i].tensor_name.substr(0, tensor_val.name.find(':'))));
     // if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
     // recompute_helper->RecordTensorAccess(tensor_val.name, time_);
+
+    const Node* node = FindNodeName(tensor_val.name.substr(0, tensor_val.name.find(':')));
+    if (!node) continue;
+    const NodeItem& item = *gview.node(node->id());
+    if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
+
+    //**********************DEBUG***********************************
+    //static std::unordered_set<std::string> specific_nodes{
+    //    "v/tower_0/cg/resnet_v12/conv8/batchnorm8/FusedBatchNorm",
+    //    "v/tower_0/cg/resnet_v12/conv8/Relu"
+    //};
+    //if (specific_nodes.count(tensor_val.readable_name)) {
+    //  LOG(INFO) << "Tracking buffer: Name " << tensor_val.readable_name << " Buffer " << tensor->buffer();
+    //}
+    //**********************DEBUG***********************************
+    recompute_helper->RecordTensorAccess(tensor_val.name, tensor_val.readable_name, time_);
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -1729,6 +1755,7 @@ void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* output
     // string tensor_name = id_str + ":" + std::to_string(i);
     string tensor_name = node_name + ":" + std::to_string(i);
     entry->tensor_name = tensor_name;
+    entry->readable_name = item.node->name() + ":" + std::to_string(i);
 
     if (entry->ref) {
       entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
@@ -1758,6 +1785,20 @@ void ExecutorState::MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, E
   }
 }
 
+void ExecutorState::SaveRecomputeTensors(const TaggedNode& tagged_node, EntryVector* outputs) {
+  if (tagged_node.recompute_handle == -1) return;
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  const string& target = RecomputeContextManager::GlobalRecomputeContextManager()->GetRecomputeContext(tagged_node.recompute_handle).target_tensor;
+  for (int i = 0; i < outputs->size(); ++i) {
+    Entry* entry = &((*outputs)[i]);
+    if (!entry->has_value) continue;
+    //if (!entry->val_field_is_set || entry->ref)
+    //{
+    //  LOG(FATAL) << "Entry is a reference, handle it please.";
+    //}
+    recompute_helper->SaveRecomputedTensor(target, entry->ref != nullptr, {entry->tensor_name, entry->ref ? entry->ref : entry->val.get()});
+  }
+}
 
 ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
     : vlog_(VLOG_IS_ON(1)),
@@ -1788,6 +1829,15 @@ ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
       root_frame_->pending_counts, root_frame_->total_input_tensors);
 
   outstanding_frames_.insert({root_frame_->frame_name, root_frame_});
+
+  // set for recomputation
+  const Graph* g = impl_->graph_.get();
+  int num_node_ids = g->num_node_ids();
+  for (int i = 0; i < num_node_ids; ++i) {
+    const Node* node = g->FindNodeId(i);
+    if (!node) continue;
+    node_names_map_[node->name()] = i;
+  }
 }
 
 ExecutorState::~ExecutorState() {
@@ -1995,6 +2045,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
   inline_ready.push_back(tagged_node);
   while (!inline_ready.empty()) {
     tagged_node = inline_ready.front();
+    //std::cout << tagged_node.node->name() << " " << tagged_node.node->id() << " " << (tagged_node.recompute_handle!=-1?"recompute":"") << "\n";
     inline_ready.pop_front();
     const Node* node = tagged_node.node;
     FrameState* input_frame = tagged_node.input_frame;
@@ -2052,12 +2103,17 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       bool is_input_dead = false;
       s = PrepareInputs(item, first_input, &inputs, &input_device_contexts,
                         &input_alloc_attrs, &is_input_dead);
-      // IncrementUsingCountOfTensors(tagged_node, &inputs);
+      IncrementUsingCountOfTensors(tagged_node, &inputs);
       RecordTensorsAccess(tagged_node, &inputs, first_input, stats_flag);
+      static std::unordered_set<std::string> specific_nodes{
+      };
+      if (specific_nodes.count(tagged_node.node->name())) {
+        LOG(INFO) << "Ready to start " << tagged_node.node->name();
+      }
       if (!s.ok()) {
         // Clear inputs.
         int num_inputs = item.num_inputs;
-        // DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
+        DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
         }
@@ -2093,6 +2149,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
           Status s = ProcessOutputs(*state->item, &state->ctx, &outputs, stats);
           RecordSwapContexts(*state->item, &outputs, &state->ctx);
           MarkOutputsWithFrameAndIter(state->tagged_node, &outputs);
+          SaveRecomputeTensors(state->tagged_node, &outputs);
           nodestats::SetMemory(stats, &state->ctx);
           if (vlog_) {
             VLOG(2) << "Async kernel done: " << state->item->node->id()
@@ -2103,7 +2160,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
 
           // Clears inputs.
           const int num_inputs = state->item->num_inputs;
-          // DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
+          DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
           for (int i = 0; i < num_inputs; ++i) {
             (first_input + i)->ClearVal();
           }
@@ -2131,15 +2188,54 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
           if (completed) Finish();
         };
         nodestats::SetOpStart(stats);
+        /*
+        if (state->item->node->name().find("FusedBatchNormGrad") != std::string::npos) {
+          std::vector<const Edge*> input_edges;
+          auto status = state->item->node->input_edges(&input_edges); // not include control-dependency
+          std::cout << "inputs of " << state->item->node->name() << ": ";
+          for (auto e : input_edges) {
+            std::cout << e->src()->name() << " ";
+          }
+          std::cout << "\n";
+          std::cout << "inputs value of " << state->item->node->name() << ": ";
+          for (auto & tv : inputs) {
+            std::cout << tv.tensor->shape().DebugString() << " ";
+          }
+          std::cout << "\n";
+        }
+        */
         device->ComputeAsync(async, &state->ctx, done);
       } else {
         // Synchronous computes.
         OpKernelContext ctx(&params, item.num_outputs);
         nodestats::SetOpStart(stats);
+        static std::unordered_set<std::string> specific_nodes{
+        };
+        if (specific_nodes.count(item.node->name())) {
+        //if (item.node->name().find("FusedBatchNormGrad") != std::string::npos) {
+          std::vector<const Edge*> input_edges;
+          auto status = item.node->input_edges(&input_edges); // not include control-dependency
+          std::cout << "Inputs of " << item.node->name() << "(" << item.node->id() << "): ";
+          for (auto e : input_edges) {
+            std::cout << "[" << e->src()->name() << "] ";
+          }
+          std::cout << "\n";
+          std::cout << "Inputs value of " << item.node->name() << ": ";
+          for (auto & tv : inputs) {
+            std::cout << "[Name: " << tv.name
+                      << " Shape: " << tv.tensor->shape().DebugString()
+                      << " is_ref: " << tv.is_ref()
+                      << " data: " << tv.tensor->data()
+                      << " buffer: " << tv.tensor->buffer() << "] ";
+          }
+          std::cout << "\n";
+        }
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
         RecordSwapContexts(item, &outputs, &ctx);
+        MarkOutputsWithFrameAndIter(tagged_node, &outputs);
+        SaveRecomputeTensors(tagged_node, &outputs);
         if (s.ok() && impl_->device_record_tensor_accesses_) {
           // Get the list of all tensors accessed during the execution
           ctx.retrieve_accessed_tensors(&accessed_tensors);
@@ -2158,7 +2254,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
 
       // Clears inputs.
       const int num_inputs = item.num_inputs;
-      // DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
+      DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
       }
@@ -2166,6 +2262,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       // Propagates outputs.
       if (s.ok()) {
         PropagateOutputs(tagged_node, &item, &outputs, &ready);
+      } else {
+        std::cout << tagged_node.node->name() << " not ok\n";
       }
       outputs.clear();
       if (!accessed_tensors.empty()) {
@@ -2179,7 +2277,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec) {
       // Postprocess.
       completed = NodeDone(s, item.node, ready, stats, &inline_ready);
     }
-  }  // while !inline_ready.empty()
+
+    // std::cout << tagged_node.node->name() << " done\n";
+  } // while !inline_ready.empty()
 
   // This thread of computation is done if completed = true.
   if (completed) Finish();
@@ -2211,6 +2311,7 @@ Status ExecutorState::PrepareInputs(const NodeItem& item, Entry* first_input,
     // i-th input.
     TensorValue* inp = &(*inputs)[i];
     inp->name = entry->tensor_name;
+    inp->readable_name = entry->readable_name;
 
     // Only merge and transfer nodes can have no-value inputs.
     if (!entry->has_value) {
@@ -2418,6 +2519,22 @@ void ExecutorState::PropagateOutputs(const TaggedNode& tagged_node,
   FrameState* input_frame = tagged_node.input_frame;
   const int64 input_iter = tagged_node.input_iter;
   const bool is_dead = tagged_node.is_dead;
+  /*
+  static std::unordered_set<std::string> specific_nodes{
+    "v/cg/conv3/biases",
+    "v/cg/conv3/biases/read",
+    "v/tower_0/cg/conv3/conv2d/Conv2D",
+    "v/tower_0/cg/conv3/BiasAdd",
+    "v/tower_0/cg/conv3/Relu"
+  };
+  if (specific_nodes.count(tagged_node.node->name())) {
+    std::cout << tagged_node.node->name() << "\n";
+    std::cout << "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
+    std::cout << "has_val = " << ((*outputs)[0].has_value ? "true":"false") << " val_field_is_set = " << ((*outputs)[0].val_field_is_set ? "true":"false") << " "
+              << " ref is set = " << ((*outputs)[0].ref ? "true":"false") << "\n";
+    std::cout << "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
+  }
+  */
 
   // Propagates outputs along out edges, and puts newly ready nodes
   // into the ready queue.
@@ -2919,9 +3036,9 @@ void ExecutorState::FrameState::ReActivateNodes(const Node* node, const int outp
       break;
     }
   }
-
+  
   if (output_tensor.has_value == false) {
-    std::cout << "Didn't find the tensor " << node->id() << "\n";
+    LOG(INFO) << "Didn't find the tensor " << node->name() << ":" << output_slot << "(" << node->id() << ":" << output_slot << ")";
     return;
   }
 
@@ -2952,7 +3069,6 @@ void ExecutorState::FrameState::ReActivateNodes(const Node* node, const int outp
     // analysis happy.
     const bool is_control_edge = (src_slot == Graph::kControlSlot);
     bool dst_need_input = !is_control_edge;
-
     if (dst_item->is_merge) {
       // A merge node is ready if all control inputs have arrived and either
       // a) a live data input becomes available or b) all data inputs are
@@ -3027,30 +3143,33 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
   Entry* input_tensors = (rh == -1 ? iter_state->input_tensors : iter_state->recompute_input_tensors);
   auto recompute_ctx = RecomputeContextManager::GlobalRecomputeContextManager()->GetRecomputeContext(rh);
   bool is_target_node = (item->node == recompute_ctx.target_node);
+  if (is_target_node) {
+    recompute_ctx.done();
+    return;
+  }
   for (size_t out_index = 0; out_index < num_output_edges; out_index++) {
     const EdgeInfo& e = edges[out_index];
     const int dst_id = e.dst_id;
     const NodeItem* dst_item = gview.node(dst_id);
     const int src_slot = e.output_slot;
-    if (is_target_node) {
-      if (src_slot  == recompute_ctx.output_slot) {
-        const int dst_slot = e.input_slot;
-        const int dst_loc = dst_item->input_start + dst_slot;
-        if ((*outputs)[src_slot].val_field_is_set) {
-          iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
-          (*outputs)[src_slot].val->set_data(nullptr);
-        } else {
-          LOG(FATAL) << "Swapping buffer with a ref is not handled yet.";
-        }
-        recompute_ctx.done();
-        return;
-      }
-      continue;
-    }
+    //if (is_target_node) {
+    //  if (src_slot  == recompute_ctx.output_slot) {
+    //    const int dst_slot = e.input_slot;
+    //    const int dst_loc = dst_item->input_start + dst_slot;
+    //    if ((*outputs)[src_slot].val_field_is_set) {
+    //      iter_state->input_tensors[dst_loc].val->set_data((*outputs)[src_slot].val->data());
+    //      (*outputs)[src_slot].val->set_data(nullptr);
+    //    } else {
+    //      LOG(FATAL) << "Swapping buffer with a ref is not handled yet.";
+    //    }
+    //    recompute_ctx.done();
+    //    return;
+    //  }
+    //  continue;
+    //}
 
     if (rh != -1 && !recompute_ctx.recompute_nodes->count(dst_item->node))
       continue;
-
     const PendingCounts::Handle dst_pending_id = dst_item->pending_id;
 
     // TODO(yuanbyu): We don't need this if we require the subgraph
