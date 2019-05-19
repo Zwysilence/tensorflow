@@ -1302,12 +1302,6 @@ class ExecutorState {
 
   volatile bool recomputing_ = false;
 
-  std::mutex recompute_mu_;
-
-  std::condition_variable cv_;
-
-  volatile bool recomputing_ = false;
-
   std::unordered_map<string, int> node_names_map_;
 
   // Mapping from frame name to outstanding frames. A new frame is created
@@ -1642,7 +1636,6 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     static std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out); */
 
   RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
-  int i = -1;
   const GraphView& gview = impl_->gview_;
 
   static const char* num_nodes_str = getenv("TF_MODEL_NUM_NODES");
