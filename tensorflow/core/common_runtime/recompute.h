@@ -8,12 +8,17 @@
 #include <functional>
 
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/framework/tensor.h"
 
 namespace tensorflow {
 
 class TensorBuffer;
-class Tensor;
 class RecomputeHelper {
+  ~RecomputeHelper() = default;
+  RecomputeHelper(const RecomputeHelper&) = delete;
+  RecomputeHelper(RecomputeHelper&&) = delete;
+  RecomputeHelper& operator=(const RecomputeHelper&) = delete;
+  RecomputeHelper& operator=(RecomputeHelper&&) = delete;
  public:
   static RecomputeHelper* GlobalRecomputeHelper() {
     static RecomputeHelper* helper = new RecomputeHelper;
@@ -33,7 +38,10 @@ class RecomputeHelper {
   void DeleteMemory(const std::string& tensor_name);
   void IncrementUsingCount(const std::string& tensor_name);
   void DecrementUsingCount(const std::string& tensor_name);
+  void SetRecomputing(const std::vector<std::string>& recompute_nodes);
+  void SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed);
  private:
+  void SetRecomputedTensors(const std::string& target);
   RecomputeHelper() { LoadRecomputePolicy(); }
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex>> condition_variable_and_mutex;
   enum DataStatus {
@@ -63,6 +71,8 @@ class RecomputeHelper {
   std::unordered_map<std::string, RecomputeCall> recompute_calls_;
   std::unordered_map<std::string, TriggerInfo> triggers_;
   std::unordered_map<std::string, std::string> readable_names_;
+  std::unordered_map<std::string, std::vector<std::string>> node_to_tensors_;
+  std::unordered_map<std::string, std::unordered_map<std::string, Tensor>> recomputed_tensors_;
   std::mutex mu_;
 };
 }

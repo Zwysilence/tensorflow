@@ -36,9 +36,10 @@ class RecomputeContextManager {
     const std::unordered_set<const Node*>* recompute_nodes;
     const Node* target_node;
     const int output_slot;
+    const string target_tensor;
     std::function<void()> done;
     RecomputeContext(const std::unordered_set<const Node*>* rn, const Node* tn, const int out_slot, std::function<void()> done_)
-       : recompute_nodes(rn), target_node(tn), output_slot(out_slot), done(done_) {}
+       : recompute_nodes(rn), target_node(tn), output_slot(out_slot), done(done_), target_tensor(tn->name()+":"+std::to_string(out_slot)) {}
     RecomputeContext() : recompute_nodes(nullptr), target_node(nullptr), output_slot(0) {}
   };
 
@@ -49,9 +50,9 @@ class RecomputeContextManager {
     return rcm;
   }
 
-  RecomputeContext GetRecomputeContext(RecomputeHandle h) {
+  RecomputeContext& GetRecomputeContext(RecomputeHandle h) {
     if (h == -1)
-      return RecomputeContext();
+      return empty_context_;
     DCHECK_LT(h, next_handle_);
     return contexts_[h];
   }
@@ -80,10 +81,15 @@ class RecomputeContextManager {
     }
   }
  private:
-  RecomputeContextManager() {}
+  RecomputeContextManager() = default;
+  RecomputeContextManager(const RecomputeContextManager&) = delete;
+  RecomputeContextManager(RecomputeContextManager&&) = delete;
+  RecomputeContextManager& operator=(const RecomputeContextManager&) = delete;
+  RecomputeContextManager& operator=(RecomputeContextManager&&) = delete;
   RecomputeHandle next_handle_ = 0;
   // index by handle
   std::vector<RecomputeContext> contexts_;
+  RecomputeContext empty_context_;
 };
 
 class StepStatsCollector;
