@@ -24,7 +24,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
-#include <fstream>
 #include <thread>
 #include <chrono>
 #include <cuda_runtime.h>
@@ -47,7 +46,7 @@ using perftools::gputools::DeviceMemoryBase;
 
 namespace tensorflow {
 
-std::string GetEnv(const string& env_name) {
+std::string GetEnv(const std::string& env_name) {
   const char* env_p = std::getenv(env_name.c_str());
   if (env_p == nullptr) return "";
   return env_p;
@@ -508,6 +507,7 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_in_trigger.access_count = 0;
     swap_in_trigger.total_access_count = in_trigger_total_access;
   }
+  fin.close();
 }
 
 Status PrepareCopy(Device* device, const DeviceContext* ctx,
@@ -551,6 +551,10 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
     std::lock_guard<std::mutex> l(*(cv_mu.second));
     swap_params.data_ready = SwapStatus::SWAPPING_OUT;
   } */
+
+#ifdef _DEBUGV2
+  LOG(INFO) << "Start to swap out: " << tensor_name;
+#endif
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   // HashBuffer* hash_buffer = swap_params.hash_buffer;

@@ -486,11 +486,17 @@ class Tensor {
 
   void SetName(const string& name) { name_ = name; }
 
-  void* data();
+  void* data() const;
 
   void set_data(void* dt);
 
-  TensorBuffer* buffer() const { return buf_; }
+  TensorBuffer* buffer() {
+    return buf_;
+  }
+
+  const TensorBuffer* buffer() const {
+    return buf_;
+  }
 
   string Name() const { return name_; }
  private:

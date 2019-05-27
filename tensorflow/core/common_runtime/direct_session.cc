@@ -462,6 +462,7 @@ Status DirectSession::RunInternal(int64 step_id, const RunOptions& run_options,
         }
         run_state.executors_done.Notify();
       });
+  LOG(INFO) << "Running step " << step_id;
 
   Executor::Args args;
   args.step_id = step_id;
@@ -696,19 +697,24 @@ Status DirectSession::Run(const RunOptions& run_options,
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
     static int graph_id_ = 0;
-    std::string graph_dir = "/home/uniquesc/v-xuapen/tf_static_graph/";
+    // std::string graph_dir = "/home/uniquesc/v-xuapen/tf_static_graph/";
+    std::string graph_dir = "/home/frog/vfonel/tf_static_graph/";
     for (auto& item : executors_and_keys->items) {
       graph_id_++;
       std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
       std::string graph_fanin_filename = graph_dir + std::to_string(graph_id_) + "_innodes.txt";
+      std::string nodetoid_filename = graph_dir + std::to_string(graph_id_) + "_node2id.txt";
       std::fstream fout_out(graph_fanout_filename, fout_out.out);
       std::fstream fout_in(graph_fanin_filename, fout_in.out);
-      if (!(fout_out.is_open() && fout_in.is_open())) {
+      std::fstream fout_n2i(nodetoid_filename, fout_n2i.out);
+      if (!(fout_out.is_open() && fout_in.is_open() && fout_n2i.is_open())) {
         LOG(ERROR) << "Failed to open graph file!";
         break;
       }
       
       for (Node* node : item.graph->nodes()) {
+        // write node name to id pair
+        fout_n2i << node->name() << "\t" << node->id() << "\n";
         // Write the fanouts of node
         fout_out << node->name() << "\t";
         for (auto it : node->out_nodes()) {
@@ -730,6 +736,7 @@ Status DirectSession::Run(const RunOptions& run_options,
 
       fout_out.close();
       fout_in.close();
+      fout_n2i.close();
     }
   }
   /* if (do_trace) {

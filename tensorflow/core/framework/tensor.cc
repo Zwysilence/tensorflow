@@ -682,7 +682,8 @@ void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   buf_->RecordTensorAccess(tensor_name, time_);
 }
 
-void* Tensor::data() {
+void* Tensor::data() const {
+  if (!buf_) return nullptr;
   return buf_->data();
 }
 
@@ -699,6 +700,7 @@ Allocator* Tensor::GetAllocator() {
   if (buf_ == nullptr) return nullptr;
   return buf_->GetAllocator();
 }
+
 int64 Tensor::BufferSize() {
   if (buf_ == nullptr) return 0;
   return buf_->BufferSize();

@@ -2293,6 +2293,7 @@ CORE_CPU_LIB_HEADERS = CORE_CPU_BASE_HDRS + [
 tf_cuda_library(
     name = "core_cpu_impl",
     srcs = [
+        "common_runtime/recompute.cc",
         "common_runtime/accumulate_n_optimizer.cc",
         "common_runtime/allocator_retry.cc",
         "common_runtime/bfc_allocator.cc",
@@ -2322,7 +2323,6 @@ tf_cuda_library(
         "common_runtime/placer.cc",
         "common_runtime/process_function_library_runtime.cc",
         "common_runtime/process_util.cc",
-        "common_runtime/recompute.cc",
         "common_runtime/renamed_device.cc",
         "common_runtime/rendezvous_mgr.cc",
         "common_runtime/rendezvous_util.cc",
