@@ -71,7 +71,7 @@ limitations under the License.
 #include "cuda/cuda_config.h"
 #endif
 
-#define _DEBUG
+// #define _DEBUG
 
 namespace tensorflow {
 
@@ -488,6 +488,27 @@ void BaseGPUDevice::CheckInputs(OpKernelContext* context,
   }
 }
 
+void BaseGPUDevice::CheckInputs(gpu::Stream* stream,
+                                OpKernelContext* context,
+                                bool before) {
+  auto func_ = [=] (std::function<void()> c) {
+    em_->ThenExecute(stream, std::move(c));
+  };
+  for (const TensorValue& tensor_val : *context->params_->inputs) {
+    const std::string& tensor_name = tensor_val.name;
+    const Tensor* tensor = tensor_val.tensor;
+    if (tensor == nullptr) continue;
+    if (tensor->buf_ == nullptr) continue;
+
+    gpu::Event* e = nullptr;
+    // func_ will check the tensor's SwapStatus in runtime
+    gpu_allocator_->CheckInput(tensor_name, tensor->buf_, &e, before, func_);
+    if (e != nullptr) {
+      stream->ThenWaitFor(e);
+    }
+  }
+}
+
 void BaseGPUDevice::ComputeHelper(OpKernel* op_kernel,
                                   OpKernelContext* context) {
   GPUDeviceContext* gpu_device_context = device_contexts_[0];
@@ -545,33 +566,37 @@ void BaseGPUDevice::ComputeHelper(OpKernel* op_kernel,
   // IncreaseUsingCount(stream, input_buffers);
   bool wait_dth = false;
   bool wait_htd = false;
-  CheckInputs(context, &wait_htd, true/*before*/);
+  // CheckInputs(context, &wait_htd, true/*before*/);
+  CheckInputs(stream, context, true/*before*/);
+  // TODO(px): ThenExecute(check the swap_params.SwapStatus is IN or not if swapping)
   // when need a swap-in tensor first time, need to make this comp wait for h2d stream to 
   // sure that the swap-in has finished (just need to do once)
   // TODO(px): make sure that this waitfor only do once
-  if (wait_htd) {
+/*   if (wait_htd) {
     // if inputs include tensors which are in swappin-in, we need to wait the h2d stream
     gpu::Stream* htd_stream = gpu_device_context->host_to_device_stream();
     stream->ThenWaitFor(htd_stream);
   #ifdef _DEBUG
     LOG(INFO) << "WaitFor host_to_device_stream";
   #endif
-  }
+  } */
   op_kernel->Compute(context);
   // DecreaseUsingCount(stream, input_buffers);
 
-  CheckInputs(context, &wait_dth, false/*before*/);
+  CheckInputs(stream, context, false/*before*/);
+
+  // CheckInputs(context, &wait_dth, false/*before*/);
   // when just swap out a tensor, need to make this comp wait for d2h stream to make sure
   // the next computation doesn't start until finising the swapping-out
   // TODO(px): release swapped-out tensor's memory here, need to guarantee no computation which
   // use allocate this memory enqueue into stream before we wait d2h stream
-  if (wait_dth) {
+  /* if (wait_dth) {
     gpu::Stream* dth_stream = gpu_device_context->device_to_host_stream();
     stream->ThenWaitFor(dth_stream);
   #ifdef _DEBUG
     LOG(INFO) << "WaitFor device_to_host_stream";
   #endif
-  }
+  } */
   
 
   if (context->status().ok()) {
