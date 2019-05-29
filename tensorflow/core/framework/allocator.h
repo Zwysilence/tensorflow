@@ -27,6 +27,10 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
 
+namespace stream_executor {
+class Event;
+} // namespace stream_executor
+
 namespace tensorflow {
 
 class TensorParams;
@@ -140,6 +144,11 @@ class Allocator {
   // virtual void GetOrCreateHashBuffer(const Tensor* tensor, const string& tensor_name, HashBuffer** hash_buf) {}
 
   virtual void CheckInput(const string& tensor_name, TensorBuffer* tensor_buf, bool*, bool) {}
+  virtual void CheckInput(const string& tensor_name,
+                          TensorBuffer* tensor_buf,
+                          se::Event**,
+                          bool,
+                          std::function<void(std::function<void()>)>) {}
 
   virtual void Notify(TensorBuffer*) {}
 

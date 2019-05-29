@@ -113,6 +113,17 @@ class EventMgr {
     FreeMemory(to_free);
   }
 
+  inline void ThenRecordEvent(se::Stream* stream,
+                              se::Event** e) {
+    mutex_lock l(mu_);
+    if (*e == nullptr) {
+      swap_events_.push_back(new se::Event(exec_));
+      swap_events_.back()->Init();
+      *e = swap_events_.back();
+    }
+    stream->ThenRecordEvent(*e);
+  }
+
  private:
   friend class TEST_EventMgrHelper;
   se::StreamExecutor* const exec_;
@@ -223,6 +234,9 @@ class EventMgr {
 
   // A stack of unused events
   std::vector<se::Event*> free_events_ GUARDED_BY(mu_);
+
+  // swapping used events
+  std::vector<se::Event*> swap_events_ GUARDED_BY(mu_);
 
   // Buffered list of tensors waiting to have an event queued for deletion
   se::Stream* accumulated_stream_ GUARDED_BY(mu_);

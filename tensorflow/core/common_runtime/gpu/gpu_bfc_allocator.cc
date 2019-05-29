@@ -30,8 +30,8 @@ limitations under the License.
 #include <cuda_runtime.h>
 #include <cstdlib>
 
-using perftools::gputools::DeviceMemoryBase;
-using perftools::gputools::Stream;
+// using perftools::gputools::DeviceMemoryBase;
+// using perftools::gputools::Stream;
 
 // #define _DEBUG
 // #define _DEBUGV2
@@ -46,7 +46,7 @@ using perftools::gputools::Stream;
 
 namespace tensorflow {
 
-std::string GetEnv(const string& env_name) {
+std::string GetEnv(const std::string& env_name) {
   const char* env_p = std::getenv(env_name.c_str());
   if (env_p == nullptr) return "";
   return env_p;
@@ -148,12 +148,13 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name,
       auto& swap_params = tensor_swap_params_map_[tensor_name];
       auto& cv_mu = swap_params.cv_mu;
       {
+        // std::lock_guard<std::mutex> ll(lock_);  // wait swapin finish if
         std::lock_guard<std::mutex> l(*(cv_mu.second));
+        // TODO(px): can be replaced as ready.is_in() || ready.is_swapin()?
         if (swap_params.need_in_addr) {
           void* in_gpu_src = swap_params.in_gpu_src;
           if (in_gpu_src == nullptr) {
-            // TODO(px): if this branch happen, seems the in_trigger is totally wrong, can judge according to SwapStatus, if not happen, can leave here
-            LOG(FATAL) << "Weird, the correspoding SwapIn in_gpu_src is not set!";
+            LOG(FATAL) << "Weird!" << tensor_name << ": the correspoding SwapIn in_gpu_src is not set!";
           }
           buf->set_data(in_gpu_src);
           swap_params.need_in_addr = false;
@@ -171,13 +172,14 @@ void GPUBFCAllocator::RecordTensorAccess(const string& tensor_name,
 }
 
 void GPUBFCAllocator::RecordSwapContext(const TensorParams& params, TensorBuffer* tensor_buf) {
-  std::lock_guard<std::mutex> l(lock_);
   if (tensor_swap_params_map_.count(params.name) == 0) return;
+  std::lock_guard<std::mutex> l(lock_);
   const string &tensor_name = params.name;
   TensorSwapParams& swap_params = tensor_swap_params_map_[tensor_name];
   swap_params.device = params.device;
   swap_params.device_context = params.device_context;
   swap_params.tensor_buffer = tensor_buf;
+  swap_params.in_gpu_src = nullptr;
   // if (hash_bufs_.count(tensor_name) == 0) {
   // #ifdef _DEBUGV2
   //   LOG(INFO) << "New HashBuffer for " << tensor_name;
@@ -185,18 +187,20 @@ void GPUBFCAllocator::RecordSwapContext(const TensorParams& params, TensorBuffer
   //   hash_bufs_[tensor_name] = new HashBuffer(tensor_buf, tensor_name);
   // }
   // swap_params.hash_buffer = hash_bufs_[tensor_name];
-  swap_params.in_gpu_src = nullptr;
-  swap_params.data_ready = SwapStatus::IN;
+  // swap_params.data_ready = SwapStatus::IN;
+  swap_params.data_ready = {true, false, false, false, false, false};
+  swap_params.need_dealloc = false;
   // swap_params.need_deallocate = false;
   swap_params.need_in_addr = false;
-  swap_params.can_deallocate_after_swap_out = true;
-  swap_params.then_deallocate = false;
+  // swap_params.can_deallocate_after_swap_out = true;
+  // swap_params.then_deallocate = false;
   buffer_tensor_map_[tensor_buf] = tensor_name;
 }
 
 // TODO(px): no need for now
 void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
-  if (buffer_tensor_map_.count(tensor_buffer) == 0) return;
+  return;
+  /* if (buffer_tensor_map_.count(tensor_buffer) == 0) return;
   const string& tensor_name = buffer_tensor_map_[tensor_buffer];
   auto& swap_params = tensor_swap_params_map_[tensor_name];
   auto& cv_mu = swap_params.cv_mu;
@@ -220,7 +224,7 @@ void GPUBFCAllocator::Notify(TensorBuffer* tensor_buffer) {
     LOG(INFO) << "Set status IN for " << swap_params.tensor_name;
     swap_params.data_ready = SwapStatus::IN;
     cv_mu.first->notify_all();
-  }
+  } */
 }
 
 // void TryReleaseBuffer(const string& tensor_name, TensorBuffer* tensor_buf) {
@@ -250,32 +254,121 @@ void GPUBFCAllocator::CheckInput(const string& tensor_name,
   auto& cv_mu = swap_params.cv_mu;
   {
     std::lock_guard<std::mutex> l(*(cv_mu.second));
-    int ready = swap_params.data_ready;
+    auto& ready = swap_params.data_ready;
     if (before) {
       // check tensor iff swapping-in before comp
-      if (ready == SwapStatus::SWAPPING_IN) {
+      if (ready.is_swapin()) {
         *flag = true;
       #ifdef _DEBUGV2
         LOG(INFO) << tensor_name << " : wait h2d to true";
       #endif
-      } else if (ready = SwapStatus::IN) {
+      } else if (ready.is_in()) {
       #ifdef _DEBUGV2
         LOG(INFO) << tensor_name << " is already been swapped-in, dont wait h2d";
       #endif
       }
     } else {
       // check tensor iff swapped-out after comp
-      if (ready == SwapStatus::SWAPPING_OUT) {
+      if (ready.is_swapout()) {
         DeallocateRaw(tensor_buf->data());
         *flag = true;
       #ifdef _DEBUGV2
         LOG(INFO) << tensor_name << " : wait d2h to true";
       #endif
-      } else if (ready == SwapStatus::OUT) {
+      } else if (ready.is_out()) {
         DeallocateRaw(tensor_buf->data());
       #ifdef _DEBUGV2
         LOG(INFO) << tensor_name << " is already been swapped-out, dont wait d2h";
       #endif
+      }
+    }
+  }
+}
+
+void GPUBFCAllocator::CheckInput(const string& tensor_name,
+                                 TensorBuffer* tensor_buf,
+                                 se::Event** e,
+                                 bool before,
+                                 Runner runner) {
+  if (tensor_swap_params_map_.count(tensor_name) == 0) return;
+
+  auto& swap_params = tensor_swap_params_map_[tensor_name];
+  auto& cv_mu = swap_params.cv_mu;
+  {
+    std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // int ready = swap_params.data_ready;
+    auto& ready = swap_params.data_ready;
+    if (before) {
+      // (px): play double check to avoid waitforevent, maybe not necessary
+      // the ready can be OUT as when swapout is done, it will overwrite the
+      // swapstatus after swapin
+      if (ready.is_swapin()) {
+        if (ready.is_waitin()) {
+          // TODO(px): as this swap-in check happen before enqueuing the computation into stream,
+          // how we can make sure that the wait one will be enqueued into stream earlier?
+          return;
+        }
+        if (swap_params.in_e == nullptr) {
+          LOG(FATAL) << tensor_name << " swap in event is nullptr!";
+        }
+        *e = swap_params.in_e;
+      #ifdef _DEBUGV2
+        LOG(INFO) << "Wait " << tensor_name << " swap in event.";
+      #endif
+        // swap_params.need_wait_in = false;
+        swap_params.data_ready.set_waitin();
+        auto done = [&swap_params] () {
+          auto& cv_mu = swap_params.cv_mu;
+          std::lock_guard<std::mutex> l(*(cv_mu.second));
+          // LOG(INFO) << "Check " << swap_params.tensor_name << " swap in status";
+          auto& ready = swap_params.data_ready;
+          // CHECK(ready.is_in() || ready.is_swapin());
+          if (!(ready.is_in() || ready.is_swapin())) {
+            LOG(FATAL) << swap_params.tensor_name << " status: " << (ready.is_out() ? 1 : 0);
+          }
+          if (ready.is_swapin()) {
+            LOG(INFO) << swap_params.tensor_name << " not finish swap in before comp.";
+          }
+        };
+        runner(done);
+      }
+    } else {
+      if (ready.is_swapout()) {
+        if (ready.is_waitout()) {
+          return;
+        }
+        if (swap_params.out_e == nullptr) {
+          LOG(FATAL) << tensor_name << " swap out event is nullptr!";
+        }
+        if (swap_params.need_dealloc) {
+        #ifdef _DEBUG2
+          LOG(INFO) << "Deallocate " << swap_params.tensor_name << " when enqueue comp success.";
+        #endif
+          DeallocateRaw(tensor_buf->data());
+          swap_params.need_dealloc = false;
+        }
+        *e = swap_params.out_e;
+        // swap_params.need_wait_out = false;
+        swap_params.data_ready.set_waitout();
+      #ifdef _DEBUGV2
+        LOG(INFO) << "Wait " << tensor_name << " swap out event.";
+      #endif
+        auto done = [&swap_params] () {
+          auto& cv_mu = swap_params.cv_mu;
+          std::lock_guard<std::mutex> l(*(cv_mu.second));
+          // LOG(INFO) << "Check " << swap_params.tensor_name << " swap out status";
+          auto& ready = swap_params.data_ready;
+          // CHECK(ready.is_out() || ready.is_swapout());
+          if (!(ready.is_out() || ready.is_swapout())) {
+            LOG(FATAL) << swap_params.tensor_name << " status: " << (ready.is_in() ? 1 : 0);
+          }
+          if (ready.is_swapout()) {
+          #ifdef _DEBUG
+            LOG(INFO) << swap_params.tensor_name << " not finish swap out when comp finish.";
+          #endif
+          }          
+        };
+        runner(done);
       }
     }
   }
@@ -328,10 +421,11 @@ void GPUBFCAllocator::LoadSwapPolicy() {
     swap_in_trigger.access_count = 0;
     swap_in_trigger.total_access_count = in_trigger_total_access;
   }
+  fin.close();
 }
 
 Status PrepareCopy(Device* device, const DeviceContext* ctx,
-    const DeviceBase::GpuDeviceInfo** dev_info, gpu::Stream** stream) {
+    const DeviceBase::GpuDeviceInfo** dev_info, se::Stream** stream) {
   if (device == nullptr) {
     return errors::Internal("Unexpected null device.");
   }
@@ -364,10 +458,8 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   DCHECK(tensor_swap_params_map_.count(tensor_name));
   auto &swap_params = tensor_swap_params_map_[tensor_name];
   auto &cv_mu = swap_params.cv_mu;
-  {
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::SWAPPING_OUT;
-  }
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  swap_params.data_ready.set_swapout();
 
   TensorBuffer* tensor_buffer = swap_params.tensor_buffer;
   // HashBuffer* hash_buffer = swap_params.hash_buffer;
@@ -391,9 +483,11 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   #ifdef _DEBUGV2
     LOG(INFO) << tensor_name << " memory size is below 2MB, ignore it!";
   #endif
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::IN;
-    return;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::IN;
+    swap_params.data_ready.unset_swapout();
+    swap_params.valid = false;
+    return;    
   }
 #ifdef _DEBUG
   LOG(INFO) << "Start to swap out: " << tensor_name;
@@ -403,12 +497,13 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   Device* device = swap_params.device;
   DeviceContext* device_context = swap_params.device_context;
   const DeviceBase::GpuDeviceInfo* dev_info = nullptr;
-  gpu::Stream* send_stream = nullptr;
+  se::Stream* send_stream = nullptr;
   Status s = PrepareCopy(device, device_context, &dev_info, &send_stream);
   if (!s.ok()) {
     LOG(FATAL) << "PrepareCopy failed.";
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::IN;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::IN;
+    swap_params.data_ready.unset_swapout();
     return;
   }
 
@@ -424,8 +519,9 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
   if (cpu_part_dst_ptr == nullptr) {
     LOG(FATAL) << "Allocate host memory failed.";
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::IN;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::IN;
+    swap_params.data_ready.unset_swapout();
     return;
   }
 
@@ -434,8 +530,9 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
       static_cast<const GPUDeviceContext*>(device_context)->device_to_host_stream();
   if (device_to_host_stream == nullptr) {
     LOG(FATAL) << "No device_to_host_stream is available.";
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::IN;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::IN;
+    swap_params.data_ready.unset_swapout();
     return;
   }
   // Wait for the sender's main stream to make sure the data are available.
@@ -448,8 +545,13 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
   device_to_host_stream->ThenWaitFor(send_stream);
 
 
-  DeviceMemoryBase gpu_src_ptr((void*)((uintptr_t)src_ptr + gpu_part_size), cpu_part_size);
+  se::DeviceMemoryBase gpu_src_ptr((void*)((uintptr_t)src_ptr + gpu_part_size), cpu_part_size);
   device_to_host_stream->ThenMemcpy(cpu_part_dst_ptr, gpu_src_ptr, cpu_part_size);
+  // TODO(px): add a event after each swapping, get a event to indicate whether swapping finish, and this event should not be used for other use
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+  dev_info->event_mgr->ThenRecordEvent(device_to_host_stream, &swap_params.out_e);
+  // swap_params.need_wait_out = true;
+  swap_params.need_dealloc = true;
 
 
   // Use of the input may outlive stack scope, so keep a ref.
@@ -462,14 +564,23 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
         if (!device_to_host_stream->ok()) {
           LOG(FATAL) << "GPU->CPU Memcpy failed";
           std::lock_guard<std::mutex> l(*(swap_params.cv_mu.second));
-          swap_params.data_ready = SwapStatus::IN;
+          // swap_params.data_ready = SwapStatus::IN;
+          swap_params.data_ready.unset_swapout();
           // tensor_buffer->Unref();
           return;
         }
         auto &cv_mu = swap_params.cv_mu;
         // std::unique_lock<std::mutex> lk(*(cv_mu.second));
         std::lock_guard<std::mutex> lk(*(cv_mu.second));
-        swap_params.data_ready = SwapStatus::OUT;
+        // swap_params.data_ready = SwapStatus::OUT;
+        swap_params.data_ready.set_out();
+        if (swap_params.need_dealloc) {
+        #ifdef _DEBUGV2
+          LOG(INFO) << "Deallocate " << swap_params.tensor_name << " when swap out done";
+        #endif
+          DeallocateRaw(swap_params.swapped_gpu_buffer.first);
+          swap_params.need_dealloc = false;
+        }
       #ifdef _DEBUGV2
         LOG(INFO) << swap_params.tensor_name << " swap out done.";
       #endif
@@ -478,7 +589,7 @@ void GPUBFCAllocator::SwapOut(const string& tensor_name, const int64 retain_size
 
 
 void GPUBFCAllocator::SwapIn(const string& tensor_name) {
-  std::lock_guard<std::mutex> l(lock_);
+  // std::lock_guard<std::mutex> l(lock_);
   /* if (invalid_swap_.count(tensor_name) != 0) {
   #ifdef _DEBUGV2
     LOG(INFO) << "Ignore the invalid swap in: " << tensor_name;
@@ -486,17 +597,22 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     return;
   } */
 
-  CHECK(tensor_swap_params_map_.count(tensor_name));
-  auto &swap_params = tensor_swap_params_map_[tensor_name];
-  auto &cv_mu = swap_params.cv_mu;
-  {
+  DCHECK(tensor_swap_params_map_.count(tensor_name));
+  auto& swap_params = tensor_swap_params_map_[tensor_name];
+  auto& cv_mu = swap_params.cv_mu;
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  if (swap_params.data_ready.is_swapin() || swap_params.data_ready.is_in()) {
+    return;
+  }
+  /* {
     std::lock_guard<std::mutex> l(*(cv_mu.second));
     int ready = swap_params.data_ready;
     if (ready != SwapStatus::SWAPPING_OUT and ready != SwapStatus::OUT) {
       return;
     }
     swap_params.data_ready = SwapStatus::SWAPPING_IN;
-  }
+  } */
+  swap_params.data_ready.set_swapin();
 
 #ifdef _DEBUG
   LOG(INFO) << "Start to swap in " << tensor_name;
@@ -510,7 +626,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   Device* device = swap_params.device;
   DeviceContext* device_context = swap_params.device_context;
   const DeviceBase::GpuDeviceInfo* dev_info = nullptr;
-  gpu::Stream* recv_stream = nullptr;
+  se::Stream* recv_stream = nullptr;
 
   // Get comp. stream and d2h stream to wait for to make sure right trigger time and ready data
   Status s = PrepareCopy(device, device_context, &dev_info, &recv_stream);
@@ -518,8 +634,9 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
     static_cast<const GPUDeviceContext*>(device_context)->device_to_host_stream();
   if (!s.ok()) {
     LOG(FATAL) << "PrepareCopy failed";
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::OUT;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::OUT;
+    swap_params.data_ready.unset_swapin();
     return;
   }
 
@@ -549,8 +666,9 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
         static_cast<const GPUDeviceContext*>(device_context)->host_to_device_stream();
       if (host_to_device_stream == nullptr) {
         LOG(FATAL) << "No host_to_device_stream is available.";
-        std::lock_guard<std::mutex> l(*(cv_mu.second));
-        swap_params.data_ready = SwapStatus::OUT;
+        // std::lock_guard<std::mutex> l(*(cv_mu.second));
+        // swap_params.data_ready = SwapStatus::OUT;
+        swap_params.data_ready.unset_swapin();
         return;
       }
 
@@ -559,7 +677,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
       // wait for comp. and d2h stream to make sure right trigger time and ready data
       host_to_device_stream->ThenWaitFor(recv_stream, device_to_host_stream);
 
-      DeviceMemoryBase gpu_dst_ptr(gpu_part2_ptr, cpu_part_size);
+      se::DeviceMemoryBase gpu_dst_ptr(gpu_part2_ptr, cpu_part_size);
       host_to_device_stream->ThenMemcpy(&gpu_dst_ptr, cpu_part_src_ptr, cpu_part_size);
 
       dev_info->event_mgr->ThenExecute(
@@ -571,7 +689,8 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
           }
           auto& cv_mu = swap_params.cv_mu;
           std::lock_guard<std::mutex> l(*(cv_mu.second));
-          swap_params.data_ready = SwapStatus::IN;
+          // swap_params.data_ready = SwapStatus::IN;
+          swap_params.data_ready.set_in();
           MergeBuffers(gpu_part_src_ptr, gpu_part2_ptr);
           swap_params.tensor_buffer->set_data(gpu_part_src_ptr);
           cuda_host_allocator->DeallocateRaw(cpu_part_src_ptr);
@@ -583,7 +702,7 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
   }
 
   void* dst_ptr = AllocateRaw(0, gpu_part_size + cpu_part_size);
-  swap_params.in_gpu_src = dst_ptr;
+  DCHECK(dst_ptr);
 
   // TODO(px): to be removed
   if (gpu_part_size > 0) {
@@ -594,13 +713,13 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
       static_cast<const GPUDeviceContext*>(device_context)->device_to_device_stream(0);
     if (device_to_device_stream == nullptr) {
       LOG(FATAL) << "No device_to_device_stream is available.";
-      std::lock_guard<std::mutex> l(*(cv_mu.second));
-      swap_params.data_ready = SwapStatus::OUT;
+      // std::lock_guard<std::mutex> l(*(cv_mu.second));
+      // swap_params.data_ready = SwapStatus::OUT;
       return;
     }
 
-    DeviceMemoryBase gpu_src_ptr(gpu_part_src_ptr, gpu_part_size);
-    DeviceMemoryBase gpu_dst_ptr(dst_ptr, gpu_part_size);
+    se::DeviceMemoryBase gpu_src_ptr(gpu_part_src_ptr, gpu_part_size);
+    se::DeviceMemoryBase gpu_dst_ptr(dst_ptr, gpu_part_size);
 
     device_to_device_stream->ThenMemcpy(&gpu_dst_ptr, gpu_src_ptr, gpu_part_size);
 
@@ -617,24 +736,23 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
 
   if (host_to_device_stream == nullptr) {
     LOG(FATAL) << "No host_to_device_stream is available.";
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.data_ready = SwapStatus::OUT;
+    // std::lock_guard<std::mutex> l(*(cv_mu.second));
+    // swap_params.data_ready = SwapStatus::OUT;
     return;
   }
 
   // Wait for the recv-stream to come to the appropriate trigger point
   host_to_device_stream->ThenWaitFor(recv_stream);
 
-  DeviceMemoryBase gpu_dst_ptr((void*)((uintptr_t)dst_ptr + gpu_part_size), cpu_part_size);
+  se::DeviceMemoryBase gpu_dst_ptr((void*)((uintptr_t)dst_ptr + gpu_part_size), cpu_part_size);
   host_to_device_stream->ThenMemcpy(&gpu_dst_ptr, cpu_part_src_ptr, cpu_part_size);
 
-  {
-    // when enqueue the memcpy to the stream, we need to make the comp.stream wait for
-    // h2d stream to make sure the data is ready.
-    // TODO(px): make this more fined that wait for single tensor
-    std::lock_guard<std::mutex> l(*(cv_mu.second));
-    swap_params.need_in_addr = true;
-  }
+  dev_info->event_mgr->ThenRecordEvent(host_to_device_stream, &swap_params.in_e);
+
+  // set the status
+  swap_params.need_in_addr = true;
+  swap_params.in_gpu_src = dst_ptr;
+  // swap_params.need_wait_in = true;
 
   // Use of the input may outlive stack scope, so keep a ref.
   dev_info->event_mgr->ThenExecute(
@@ -642,8 +760,8 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
       [host_to_device_stream, dst_ptr, cpu_part_src_ptr, &swap_params]() {
         if (!host_to_device_stream->ok()) {
           LOG(FATAL) << "GPU->CPU Memcpy failed";
-          std::lock_guard<std::mutex> l(*(swap_params.cv_mu.second));
-          swap_params.data_ready = SwapStatus::OUT;
+          // std::lock_guard<std::mutex> l(*(swap_params.cv_mu.second));
+          // swap_params.data_ready = SwapStatus::OUT;
           return;
         }
         auto &cv_mu = swap_params.cv_mu;
@@ -651,7 +769,8 @@ void GPUBFCAllocator::SwapIn(const string& tensor_name) {
       #ifdef _DEBUGV2
         LOG(INFO) << swap_params.tensor_name << " swap in done.";
       #endif
-        swap_params.data_ready = SwapStatus::IN;
+        // swap_params.data_ready = SwapStatus::IN;
+        swap_params.data_ready.set_in();
         cuda_host_allocator->DeallocateRaw(cpu_part_src_ptr);
       });
 }

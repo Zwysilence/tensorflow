@@ -497,6 +497,7 @@ Status DirectSession::RunInternal(int64 step_id, const RunOptions& run_options,
         }
         run_state.executors_done.Notify();
       });
+  LOG(INFO) << "Running step " << step_id;
 
   Executor::Args args;
   args.step_id = step_id;

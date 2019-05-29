@@ -39,5 +39,3 @@ xcuserdata/**
 *.iml
 local.properties
 gradleBuild
-
-build.sh
