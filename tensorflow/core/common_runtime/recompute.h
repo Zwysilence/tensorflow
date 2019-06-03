@@ -38,7 +38,7 @@ class RecomputeHelper {
   void DeleteMemory(const std::string& tensor_name);
   void IncrementUsingCount(const std::string& tensor_name);
   void DecrementUsingCount(const std::string& tensor_name);
-  void SetRecomputing(const std::vector<std::string>& recompute_nodes);
+  void SetRecomputing(const std::string& target_tensor, const std::vector<std::string>& recompute_nodes);
   void SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed);
  private:
   void SetRecomputedTensors(const std::string& target);
@@ -72,7 +72,8 @@ class RecomputeHelper {
   std::unordered_map<std::string, TriggerInfo> triggers_;
   std::unordered_map<std::string, std::string> readable_names_;
   std::unordered_map<std::string, std::vector<std::string>> node_to_tensors_;
-  std::unordered_map<std::string, std::unordered_map<std::string, Tensor>> recomputed_tensors_;
+  std::unordered_map<std::string, std::unordered_map<std::string, Tensor>> saved_tensors_;
+  std::unordered_map<std::string, std::unordered_set<std::string>> recompute_tensors_;
   std::mutex mu_;
 };
 }
