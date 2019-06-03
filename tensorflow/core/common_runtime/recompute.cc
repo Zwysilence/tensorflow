@@ -84,10 +84,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
   volatile int* ready = &(params.data_ready);
   std::unique_lock<std::mutex> ul(*(cv_mu.second));
   if (*ready == DataStatus::OUT) {
-    {
-      std::lock_guard<std::mutex> l(mu_);
-      if (*ready != DataStatus::OUT) return;
-    }
+    std::lock_guard<std::mutex> l(mu_);
     LOG(INFO) << "Recompute " << tensor_name;
     *ready = DataStatus::RECOMPUTING;
     ul.unlock();
