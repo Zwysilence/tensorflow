@@ -342,11 +342,13 @@ Status EagerLocalExecute(EagerOperation* op,
       ctx, device, op, kernel->kernel(),
       ctx->ShouldStoreMetadata() ? ctx->RunMetadataProto() : nullptr);
   if (!status.ok()) return status;
+  std::string op_uname;
+  ctx->GetUniqueOpName(op->Name(), op_uname);
   std::unique_ptr<NodeExecStats> maybe_stats;
   if (ctx->ShouldStoreMetadata()) {
     int64 now_nanos = Env::Default()->NowNanos();
     maybe_stats.reset(new NodeExecStats);
-    maybe_stats->set_node_name(op->Name());
+    maybe_stats->set_node_name(op_uname);
     maybe_stats->set_all_start_micros(now_nanos / EnvTime::kMicrosToNanos);
     maybe_stats->set_all_start_nanos(now_nanos);
     maybe_stats->set_op_start_rel_micros(0);
@@ -356,6 +358,14 @@ Status EagerLocalExecute(EagerOperation* op,
     // TODO(apassos) track referenced tensors
   }
   retvals->resize(*num_retvals);
+  
+  /* if (op->Name().empty()) {
+    // LOG(INFO) << "empty op name";
+    // TODO(px): try to fix it
+    op_uname = "";
+  } else {
+    ctx->GetUniqueOpName(op->Name(), op_uname);
+  } */
   if (ctx->Async()) {
     // Note that for async mode, execution order will make sure that all
     // input handles are ready before executing them.
@@ -366,13 +376,13 @@ Status EagerLocalExecute(EagerOperation* op,
     }
     EagerNode* node =
         new ExecuteNode(id, ctx, op->Device(), op->Inputs(), kernel,
-                        maybe_stats.release(), output_dtypes, *retvals);
+                        maybe_stats.release(), output_dtypes, *retvals, op_uname);
     ctx->ExecutorAdd(node);
   } else {
     // Execute checks if retvals[i] is nullptr or not to figure if it needs to
     // allocate it.
     status = EagerExecute(ctx, op->Device(), op->Inputs(), kernel,
-                          maybe_stats.get(), retvals->data(), *num_retvals);
+                          maybe_stats.get(), retvals->data(), *num_retvals, op_uname);
   }
 
   return status;
@@ -615,17 +625,23 @@ Status EagerExecute(EagerOperation* op,
               << op->Device()->name();
   }
 
+  LOG(INFO) << "EagerRemoteExecute: " << op->Name();
+  // TODO(px): no RecordTensorAccess implemented for EagerRemoteExecute
   return EagerRemoteExecute(op, retvals->data(), num_retvals);
 }
 
 Status EagerExecute(EagerContext* ctx, Device* device,
                     const gtl::InlinedVector<TensorHandle*, 4>& op_inputs,
                     KernelAndDevice* kernel, NodeExecStats* maybe_stats,
-                    TensorHandle** retvals, int num_retvals) {
+                    TensorHandle** retvals, int num_retvals, const std::string& op_uname) {
   if (device == nullptr) {
     // TODO(apassos) debug how the assignment below might return a different
     // device from the one requested above.
     device = kernel->device();
+  }
+  
+  if (ctx->ShouldRecordOp()) {
+    LOG(INFO) << op_uname;
   }
 
   std::vector<Tensor> outputs(1);
@@ -642,9 +658,9 @@ Status EagerExecute(EagerContext* ctx, Device* device,
   // TODO(agarwal): change Run to take vector of handles ?
   ScopedStepContainer* container = ctx->StepContainer();
   if (container == nullptr) {
-    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats));
+    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats, op_uname));
   } else {
-    TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats));
+    TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats, op_uname));
   }
   if (maybe_stats != nullptr) {
     int64 nanos = Env::Default()->NowNanos();

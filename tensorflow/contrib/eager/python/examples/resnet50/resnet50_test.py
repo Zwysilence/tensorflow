@@ -30,6 +30,9 @@ from tensorflow.contrib.eager.python.examples.resnet50 import resnet50
 from tensorflow.contrib.summary import summary_test_util
 from tensorflow.python.client import device_lib
 from tensorflow.python.eager import tape
+from tensorflow.python.eager import context
+
+import node_time_util
 
 
 def device_and_data_format():
@@ -191,7 +194,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         if 'K20' in device.physical_device_desc:
           return (16,)
         if 'P100' in device.physical_device_desc:
-          return (16, 32, 64)
+          return (64,)
 
       if tf.DeviceSpec.from_string(device.name).device_type == 'TPU':
         return (32,)
@@ -215,7 +218,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
     # which forces a sync. This is a roundabout way, yes.
     tf.constant(1.).cpu()
 
-  def _benchmark_eager_apply(self, label, device_and_format, defun=False,
+  """ def _benchmark_eager_apply(self, label, device_and_format, defun=False,
                              execution_mode=None):
     with tfe.execution_mode(execution_mode):
       device, data_format = device_and_format
@@ -250,7 +253,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
   def benchmark_eager_apply_with_defun(self):
     self._benchmark_eager_apply('eager_apply_with_defun',
-                                device_and_data_format(), defun=True)
+                                device_and_data_format(), defun=True) """
 
   def _benchmark_eager_train(self,
                              label,
@@ -269,24 +272,33 @@ class ResNet50Benchmarks(tf.test.Benchmark):
           model.call = tfe.defun(model.call)
           apply_grads = tfe.defun(apply_gradients)
 
-        num_burn = 3
-        num_iters = 10
+        num_burn = 5
+        num_iters = 20
+        _NUM_STEPS_TO_PROFILE = 10
+
         with tf.device(device):
           iterator = make_iterator((images, labels))
           for _ in xrange(num_burn):
             (images, labels) = iterator.next()
             apply_grads(model, optimizer,
                         compute_gradients(model, images, labels))
+            self._force_device_sync()
           if execution_mode:
             tfe.async_wait()
           self._force_device_sync()
           gc.collect()
 
           start = time.time()
-          for _ in xrange(num_iters):
+          for i in xrange(num_iters):
+            if i == _NUM_STEPS_TO_PROFILE:
+              context.context().enable_run_metadata()
             (images, labels) = iterator.next()
             apply_grads(model, optimizer,
                         compute_gradients(model, images, labels))
+            if i == _NUM_STEPS_TO_PROFILE:
+              run_metadata = context.context().export_run_metadata()
+              node_time_util.get_node_time(run_metadata)
+            self._force_device_sync()
           if execution_mode:
             tfe.async_wait()
           self._force_device_sync()
@@ -296,7 +308,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
     self._benchmark_eager_train('eager_train', MockIterator,
                                 device_and_data_format(), defun=False)
 
-  def benchmark_eager_train_async(self):
+  """ def benchmark_eager_train_async(self):
     self._benchmark_eager_train(
         'eager_train_async',
         MockIterator,
@@ -329,7 +341,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
     self._benchmark_eager_train(
         'eager_train_dataset_with_defun', make_iterator,
-        device_and_data_format(), defun=True)
+        device_and_data_format(), defun=True) """
 
 
 if __name__ == '__main__':

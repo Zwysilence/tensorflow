@@ -35,8 +35,9 @@ class ExecuteNode : public EagerNode {
               const tensorflow::gtl::InlinedVector<TensorHandle*, 4>& inputs,
               KernelAndDevice* kernel, NodeExecStats* maybe_stats,
               const DataTypeVector& output_dtypes,
-              const tensorflow::gtl::InlinedVector<TensorHandle*, 2>& retvals)
-      : EagerNode(id),
+              const tensorflow::gtl::InlinedVector<TensorHandle*, 2>& retvals,
+              const std::string& op_uname)
+      : EagerNode(id, op_uname),
         ctx_(ctx),
         op_device_(op_device),
         inputs_(inputs),
@@ -63,7 +64,7 @@ class ExecuteNode : public EagerNode {
   tensorflow::Status Run() override {
     const Status status =
         EagerExecute(ctx_, op_device_, inputs_, kernel_, maybe_stats_.get(),
-                     retvals_.begin(), retvals_.size());
+                     retvals_.begin(), retvals_.size(), name);
     if (status.ok()) {
       return status;
     } else {

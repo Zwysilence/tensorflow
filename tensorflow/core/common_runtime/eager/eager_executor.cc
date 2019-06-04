@@ -17,7 +17,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-EagerNode::EagerNode(tensorflow::uint64 id) : id(id) {}
+EagerNode::EagerNode(tensorflow::uint64 id, const std::string& name) : id(id), name(name) {}
 
 EagerExecutor::~EagerExecutor() {
   tensorflow::mutex_lock l(node_queue_mutex_);

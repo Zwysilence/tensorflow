@@ -21,6 +21,14 @@ limitations under the License.
 #include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/util/env_var.h"
 
+#include <fstream>
+
+std::string GetEnv(const std::string& env_name) {
+  const char* env = std::getenv(env_name.c_str());
+  if (env == nullptr) return "";
+  return env;
+}
+
 namespace tensorflow {
 namespace {
 
@@ -33,6 +41,8 @@ bool ReadBoolFromEnvVar(StringPiece env_var_name, bool default_val) {
 }
 
 }  // namespace
+
+const std::string EagerContext::kanonymous_op_name = "anonymous";
 
 EagerContext::EagerContext(const SessionOptions& opts,
                            ContextDevicePlacementPolicy default_policy,
@@ -60,6 +70,17 @@ EagerContext::EagerContext(const SessionOptions& opts,
   } else {
     runner_ = [](std::function<void()> closure) { closure(); };
   }
+  record_op = (GetEnv("TF_RECORD_OP") == "true") ? true : false;
+  LOG(INFO) << "TF_RECORD_OP: " << (record_op ? "true" : "false");
+  InitPerIterOpCount();
+  /* fout_in.open(innodes_file.c_str(), fout_in.out);
+  if (!fout_in.is_open()) {
+    LOG(INFO) << "Can not open innodes file: " << innodes_file;
+  }
+  fout_out.open(outnodes_file.c_str(), fout_out.out);
+  if (!fout_out.is_open()) {
+    LOG(INFO) << "Can not open outnodes file: " << outnodes_file;
+  } */
 }
 
 void EagerContext::InitDeviceMapAndAsync() {
@@ -208,6 +229,62 @@ Status EagerContext::FindDeviceByName(const string& name, Device** result) {
   }
   *result = it->second;
   return Status::OK();
+}
+
+void EagerContext::InitPerIterOpCount() {
+  std::string op_count_file = GetEnv(op_count_env);
+  if (op_count_file.empty()) {
+    LOG(FATAL) << "Eager Execution needs specify a op count per iter file!";
+    return;
+  }
+
+  std::fstream fin(op_count_file, fin.in);
+  if (!fin.is_open()) {
+    LOG(FATAL) << "open " << op_count_file << " failed.";
+    return;
+  }
+
+  LOG(INFO) << "Load " << op_count_file << " succeeded.";
+
+  std::string op_name;
+  uint32 op_count;
+  while (fin >> op_name >> op_count) {
+    if (op_name[0] == '#') {
+      continue;
+    }
+    CHECK(!op_per_iter_count_.count(op_name));
+    op_per_iter_count_[op_name] = op_count;
+  }
+  fin.close();
+}
+
+void EagerContext::GetUniqueOpName(const std::string& op_name, std::string& op_uname) {
+  std::string name;
+  if (op_name.empty()) {
+    LOG(INFO) << "Get an empty op name";
+    name = kanonymous_op_name;
+  } else {
+    name = op_name;
+  }
+  std::lock_guard<std::mutex> l(op_name_mu_);
+  auto it = op_name_count_.find(name);
+  if (it != op_name_count_.end()) {
+    uint32 curr_id = it->second;
+    if (!op_per_iter_count_.count(name)) {
+      op_uname = name + '_' + std::to_string(it->second++);
+    } else {
+      // CHECK(op_per_iter_count_.count(op_name)) << op_name;
+      uint32 op_count_ = op_per_iter_count_[name];
+      if (curr_id == op_count_) {
+        // when reach a new iteration, reset the count to zero
+        it->second = 0;
+      }
+      op_uname = name + "_" + std::to_string(it->second++);
+    }    
+  } else {
+    op_uname = name + "_0";
+    op_name_count_[name] = 1;
+  }
 }
 
 void EagerContext::StartStep() {

@@ -831,12 +831,12 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::flat_inner_outer_dims(
 }
 
 inline Tensor::Tensor(const Tensor& other)
-    : shape_(other.shape()), buf_(other.buf_) {
+    : shape_(other.shape()), buf_(other.buf_), name_(other.name_) {
   if (buf_) buf_->Ref();
 }
 
 inline Tensor::Tensor(Tensor&& other)
-    : shape_(std::move(other.shape())), buf_(other.buf_) {
+    : shape_(std::move(other.shape())), buf_(other.buf_), name_(std::move(other.name_)) {
   other.buf_ = nullptr;
 }
 
@@ -844,6 +844,7 @@ inline Tensor& Tensor::operator=(Tensor&& other) {
   // Avoid self-assignment, since we might destroy our underlying buffer.
   if (&other != this) {
     shape_ = std::move(other.shape_);
+    name_ = std::move(other.name_);
     if (buf_) buf_->Unref();
     buf_ = other.buf_;
     other.buf_ = nullptr;

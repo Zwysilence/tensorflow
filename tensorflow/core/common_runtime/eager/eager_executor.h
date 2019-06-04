@@ -42,7 +42,7 @@ namespace tensorflow {
 // device to another.
 class EagerNode {
  public:
-  explicit EagerNode(uint64 id);
+  explicit EagerNode(uint64 id, const std::string& name="");
 
   virtual ~EagerNode() {}
 
@@ -53,6 +53,8 @@ class EagerNode {
   // An id unique to the TFE_Context under which this node is created. Allocated
   // monotonically.
   const uint64 id;
+
+  const std::string name;
 };
 
 // A class for handling async execution (see TFE_ContextSetAsync).

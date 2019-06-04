@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/common_runtime/eager/kernel_and_device.h"
+#include "tensorflow/core/common_runtime/eager/context.h"
 
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
@@ -28,6 +29,27 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/public/version.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
+
+#include <fstream>
+#include <string>
+
+std::string GetEnv(const std::string& env_name) {
+  const char* env = std::getenv(env_name.c_str());
+  if (env == nullptr) return "";
+  return env;
+}
+
+const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
+const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
+const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
+const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
+
+static std::fstream tensor_access_fout;
+static std::fstream fout_in(innodes_file.c_str(), fout_in.out);
+static std::fstream fout_out(outnodes_file.c_str(), fout_out.out);
+/* if (!(fout_in.is_open() && fout_out.is_open())) {
+  LOG(INFO) << "Can not open graph structure file";
+} */
 
 namespace tensorflow {
 
@@ -62,20 +84,72 @@ Status KernelAndDevice::Init(const NodeDef& ndef, FunctionLibraryRuntime* flib,
 
 Status KernelAndDevice::Run(std::vector<Tensor>* inputs,
                             std::vector<Tensor>* outputs,
-                            NodeExecStats* stats) {
+                            NodeExecStats* stats,
+                            const std::string& op_uname) {
   ScopedStepContainer step_container(0, [this](const string& name) {
     device_->resource_manager()->Cleanup(name).IgnoreError();
   });
-  return this->Run(&step_container, inputs, outputs, stats);
+  return this->Run(&step_container, inputs, outputs, stats, op_uname);
 }
 
 Status KernelAndDevice::Run(ScopedStepContainer* step_container,
                             std::vector<Tensor>* inputs,
                             std::vector<Tensor>* outputs,
-                            NodeExecStats* stats) {
+                            NodeExecStats* stats,
+                            const std::string& op_uname) {
   gtl::InlinedVector<TensorValue, 4> input_vector;
+  uint64 time_ = Env::Default()->NowMicros();
+  static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
+  if (log_tensor_access) {
+    if (!tensor_access_fout.is_open()) {
+      tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
+    }
+  }
+  if (stats != nullptr) {
+    int i = 0;
+    for (Tensor& t : *inputs) {
+      if (!t.Name().empty()) ++i;
+    }
+    if (i) fout_in << "SrcNode" << "\t" << op_uname << "\t" << i << "\n";
+  }
   for (Tensor& t : *inputs) {
     input_vector.push_back(TensorValue(&t));
+    // CHECK(!t.Name().empty());
+    std::string tensor_name = t.Name();    
+    if (tensor_name.empty()) {
+      // LOG(INFO) << op_uname << " with a empty tensor:";
+      // LOG(INFO) << "Shape: " << t.shape().DebugString();
+      // LOG(INFO) << "data: " << t.data();
+      // LOG(INFO) << "buffer: " << t.buffer();
+      // LOG(FATAL) << "Tensor name is empty!";
+      continue;
+    }
+    // seems there is no op with empty name, but there are tensors with empty name
+    bool is_anonymous = false;
+    if (!tensor_name.substr(0, tensor_name.find_first_of('_')).compare(EagerContext::kanonymous_op_name)) {
+      is_anonymous = true;
+    }
+    
+    t.RecordTensorAccess(tensor_name, time_);
+    if (stats != nullptr) {
+      auto pos = tensor_name.find_first_of(':');
+      std::string node_name = tensor_name.substr(0, pos);
+      std::string slot_ = tensor_name.substr(pos+1, tensor_name.length());
+      // int slot;
+      // sscanf(slot_.c_str(), "%d", &slot);
+      fout_in << "InputNode" << "\t" << node_name << "\t" << slot_ << "\n";
+      if (is_anonymous) {
+        fout_in << "\tShape: \t" << t.shape().DebugString() << "\n";
+        fout_in << "\tdata: \t" << t.data() << "\n";
+        fout_in << "\tbuffer: \t" << t.buffer() << "\n";
+      }
+      if (log_tensor_access) {
+        if (!tensor_access_fout.is_open()) {
+          LOG(FATAL) << "Failed to open /tmp/tensor_access.txt";
+        }
+        tensor_access_fout << tensor_name << "\t" << time_ << "\n";
+      }
+    }
   }
 
   std::vector<AllocatorAttributes> out_attrs(kernel_->num_outputs());
@@ -122,8 +196,17 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
   if (!context.status().ok()) return context.status();
 
   outputs->clear();
+  DeviceContext* dev_ctx = context.op_device_context();
+  CHECK(dev_ctx);
+  /* if (dev_ctx == nullptr) {
+    // TODO(px): if this happen, get from device
+    LOG(FATAL) << "Can not get DeviceContext from OpKernelContext.";
+  } */
   for (int i = 0; i < context.num_outputs(); ++i) {
     outputs->push_back(Tensor(*context.mutable_output(i)));
+    if (op_uname.empty()) continue;
+    std::string tensor_name = op_uname + ":" + std::to_string(i);
+    outputs->back().RecordSwapContext({tensor_name, device_, dev_ctx});
   }
   if (stats != nullptr) {
     for (const auto& allocator_pair : context.wrapped_allocators()) {

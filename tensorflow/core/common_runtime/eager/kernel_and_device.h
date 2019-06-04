@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/framework/cancellation.h"
+#include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
@@ -61,10 +62,10 @@ class KernelAndDevice {
 
   // TODO(ashankar): Handle list-valued inputs.
   Status Run(std::vector<Tensor>* inputs, std::vector<Tensor>* outputs,
-             NodeExecStats* stats);
+             NodeExecStats* stats, const std::string& op_uname);
 
   Status Run(ScopedStepContainer* step_container, std::vector<Tensor>* inputs,
-             std::vector<Tensor>* outputs, NodeExecStats* stats);
+             std::vector<Tensor>* outputs, NodeExecStats* stats, const std::string& op_uname);
 
   const OpKernel* kernel() const { return kernel_.get(); }
 

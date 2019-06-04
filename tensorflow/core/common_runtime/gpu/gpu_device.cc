@@ -513,10 +513,13 @@ void BaseGPUDevice::CheckInputs(se::Stream* stream,
     em_->ThenExecute(stream, std::move(c));
   };
   for (const TensorValue& tensor_val : *context->params_->inputs) {
-    const std::string& tensor_name = tensor_val.name;
+    // const std::string& tensor_name = tensor_val.name;    
     const Tensor* tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
     if (tensor->buf_ == nullptr) continue;
+    // const std::string& t_tensor_name = tensor->Name();
+    const std::string& tensor_name = tensor_val.name.empty() ? tensor->Name() : tensor_val.name;
+    if (tensor_name.empty()) continue;
 
     se::Event* e = nullptr;
     // func_ will check the tensor's SwapStatus in runtime

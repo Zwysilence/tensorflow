@@ -740,6 +740,7 @@ void Tensor::CopyFromInternal(const Tensor& other, const TensorShape& shape) {
   // shape.
   DataType other_dtype = other.dtype();
   shape_ = shape;
+  name_ = other.name_;
   set_dtype(other_dtype);
   if (buf_ != other.buf_) {
     UnrefIfNonNull(buf_);

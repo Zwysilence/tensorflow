@@ -160,6 +160,12 @@ class EagerContext {
 
   FunctionLibraryDefinition* FuncLibDef() { return &func_lib_def_; }
 
+  void GetUniqueOpName(const std::string& op_name, std::string& op_uname);
+
+  bool ShouldRecordOp() const { return record_op; }
+
+  static const std::string kanonymous_op_name;
+
 #ifndef __ANDROID__
   Status GetClientAndContextID(Device* device, eager::EagerClient** client,
                                uint64* context_id);
@@ -193,6 +199,9 @@ class EagerContext {
   // EagerService.SendTensor RPC. If false, _Send/_Recv ops should be used
   // instead (which in-turn use WorkerService.RecvTensor RPCs).
   bool UseSendTensorRPC() { return use_send_tensor_rpc_; }
+
+  // std::fstream fout_in;
+  // std::fstream fout_out;
 
  private:
   void InitDeviceMapAndAsync();
@@ -253,6 +262,19 @@ class EagerContext {
   mutable mutex async_map_mu_;
   std::unordered_map<std::thread::id, bool> thread_local_async_
       GUARDED_BY(async_map_mu_);
+
+  std::mutex op_name_mu_;
+  std::unordered_map<std::string, uint32> op_name_count_
+      GUARDED_BY(op_name_mu_);
+  std::unordered_map<std::string, uint32> op_per_iter_count_;
+
+  const std::string op_count_env = "OP_COUNT_FILE";
+  // const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
+  // const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
+
+  void InitPerIterOpCount();
+
+  bool record_op;    // if we record op name when invoking it
 
   Env* const env_;
 

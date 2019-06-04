@@ -1695,7 +1695,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
   uint64 time_ = Env::Default()->NowMicros();
   static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
-  if (log_tensor_access){
+  if (log_tensor_access) {
     if (!tensor_access_fout.is_open())
       tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
   }
@@ -1725,6 +1725,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   }
 
   for(auto &tensor_val : *inputs) {
+    if (num_nodes_ == -1) break;
     if (gview.num_nodes_ != num_nodes_) {
     #ifdef _DEBUGV2
       LOG(INFO) << "error node num: " << gview.num_nodes_;
