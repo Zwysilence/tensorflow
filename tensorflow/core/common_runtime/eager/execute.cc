@@ -625,7 +625,7 @@ Status EagerExecute(EagerOperation* op,
               << op->Device()->name();
   }
 
-  LOG(WARNING) << "no RecordTensorAccess implemented for EagerRemoteExecute"
+  LOG(WARNING) << "no RecordTensorAccess implemented for EagerRemoteExecute";
   // TODO(px): no RecordTensorAccess implemented for EagerRemoteExecute
   return EagerRemoteExecute(op, retvals->data(), num_retvals);
 }

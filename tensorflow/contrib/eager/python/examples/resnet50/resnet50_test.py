@@ -276,8 +276,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
     # (e.g., inside a 'with tf.device("/gpu:0")' block)
     # then this will force a copy from CPU->NON_CPU_DEVICE->CPU,
     # which forces a sync. This is a roundabout way, yes.
-    # tf.constant(1.).cpu()
-    tf.constant(1.).gpu()
+    tf.constant(1.).cpu()
 
   """ def _benchmark_eager_apply(self, label, device_and_format, defun=False,
                              execution_mode=None):
