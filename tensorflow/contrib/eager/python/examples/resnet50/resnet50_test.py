@@ -18,9 +18,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
+import os
+os.environ['CUDA_VISIBLE_DEVICES']='3'
+os.environ['TF_RECORD_OP']='false'
+os.environ['TF_LOG_TENSOR_ACCESS']='false'
+os.environ['SWAP_POLICY_FILE']="/vpublic01/frog/vfonel/TFCompGraphSim/resnet50_64_eager/swapping_decision.log"
+
 import gc
 import tempfile
 import time
+import string
 
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
@@ -34,6 +42,54 @@ from tensorflow.python.eager import context
 
 import node_time_util
 
+_NUM_STEPS_TO_PROFILE=10
+
+params=dict()
+params['batch_size']=32
+params['num_batches']=20
+params['profile']=False
+
+def getflags(argv):
+  filter_ = "--benchmarks=."
+  bool_filter = ["False", "True"]
+  for i in range(1, len(argv)):
+    opt = argv[i]
+    if opt == filter_:
+      continue
+    else:
+      index = 0
+      for s in opt:
+        if s == '-':
+          index += 1
+        else:
+          break
+      curr_opt = opt[index:]
+      bool_ = False
+      num_ = True
+      name = curr_opt.split('=')[0]
+      value_ = curr_opt.split('=')[1]
+      if value_ in bool_filter:
+        bool_ = True
+        num_ = False
+      else:
+        try:
+          string.atoi(value_)
+        except ValueError:
+          num_ = False
+      if bool_:
+        if value_ == "True":
+          params[name] = True
+        elif value_ == "False":
+          params[name] = False
+        else:
+          print("Error opt: %s" % opt)
+          exit(1)
+      if num_:
+        try:
+          params[name] = string.atoi(value_)
+        except ValueError:
+          print(name, value_)
+          exit(1)
 
 def device_and_data_format():
   return ('/gpu:0', 'channels_first') if tfe.num_gpus() else ('/cpu:0',
@@ -194,6 +250,10 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         if 'K20' in device.physical_device_desc:
           return (16,)
         if 'P100' in device.physical_device_desc:
+          if params.keys().__contains__('batch_size'):
+            batch_size = params['batch_size']
+            print("Use Batch size: %d" % batch_size)
+            return (batch_size,)
           return (64,)
 
       if tf.DeviceSpec.from_string(device.name).device_type == 'TPU':
@@ -216,7 +276,8 @@ class ResNet50Benchmarks(tf.test.Benchmark):
     # (e.g., inside a 'with tf.device("/gpu:0")' block)
     # then this will force a copy from CPU->NON_CPU_DEVICE->CPU,
     # which forces a sync. This is a roundabout way, yes.
-    tf.constant(1.).cpu()
+    # tf.constant(1.).cpu()
+    tf.constant(1.).gpu()
 
   """ def _benchmark_eager_apply(self, label, device_and_format, defun=False,
                              execution_mode=None):
@@ -273,8 +334,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
           apply_grads = tfe.defun(apply_gradients)
 
         num_burn = 5
-        num_iters = 20
-        _NUM_STEPS_TO_PROFILE = 10
+        num_iters = params['num_batches']
 
         with tf.device(device):
           iterator = make_iterator((images, labels))
@@ -290,19 +350,23 @@ class ResNet50Benchmarks(tf.test.Benchmark):
 
           start = time.time()
           for i in xrange(num_iters):
-            if i == _NUM_STEPS_TO_PROFILE:
-              context.context().enable_run_metadata()
+            if params['profile']:
+              if i == _NUM_STEPS_TO_PROFILE:
+                context.context().enable_run_metadata()
             (images, labels) = iterator.next()
             apply_grads(model, optimizer,
                         compute_gradients(model, images, labels))
-            if i == _NUM_STEPS_TO_PROFILE:
-              run_metadata = context.context().export_run_metadata()
-              node_time_util.get_node_time(run_metadata)
             self._force_device_sync()
+            if params['profile']:
+              if i == _NUM_STEPS_TO_PROFILE:
+                run_metadata = context.context().export_run_metadata()
+                node_time_util.get_node_time(run_metadata)
+                context.context().disable_run_matadata()
           if execution_mode:
             tfe.async_wait()
           self._force_device_sync()
           self._report(label, start, num_iters, device, batch_size, data_format)
+
 
   def benchmark_eager_train_sync(self):
     self._benchmark_eager_train('eager_train', MockIterator,
@@ -343,7 +407,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
         'eager_train_dataset_with_defun', make_iterator,
         device_and_data_format(), defun=True) """
 
-
 if __name__ == '__main__':
+  getflags(sys.argv)
   tfe.enable_eager_execution()
   tf.test.main()
