@@ -254,6 +254,7 @@ class EagerContext {
 
   // Information related to step containers.
   std::atomic<int> num_active_steps_;
+  std::atomic<int> total_steps_;
   std::unique_ptr<ScopedStepContainer> step_container_ GUARDED_BY(metadata_mu_);
 
   // True if the default value for execution mode is async. Note that this value
@@ -266,13 +267,13 @@ class EagerContext {
   std::mutex op_name_mu_;
   std::unordered_map<std::string, uint32> op_name_count_
       GUARDED_BY(op_name_mu_);
-  std::unordered_map<std::string, uint32> op_per_iter_count_;
+  // std::unordered_map<std::string, uint32> op_per_iter_count_;
 
-  const std::string op_count_env = "OP_COUNT_FILE";
+  // const std::string op_count_env = "OP_COUNT_FILE";
   // const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
   // const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
 
-  void InitPerIterOpCount();
+  // void InitPerIterOpCount();
 
   bool record_op;    // if we record op name when invoking it
 

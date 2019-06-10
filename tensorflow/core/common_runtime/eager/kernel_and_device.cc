@@ -41,8 +41,8 @@ std::string GetEnv(const std::string& env_name) {
 
 const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
 const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
-const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
-const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
+// const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
+// const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
 
 static std::fstream tensor_access_fout;
 static std::fstream fout_in(innodes_file.c_str(), fout_in.out);
@@ -105,7 +105,8 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
       tensor_access_fout.open("/tmp/tensor_access.txt", tensor_access_fout.out);
     }
   }
-  if (stats != nullptr) {
+  bool is_valid = (stats && !op_uname.empty());
+  if (is_valid) {
     int i = 0;
     for (Tensor& t : *inputs) {
       if (!t.Name().empty()) ++i;
@@ -125,24 +126,27 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
       continue;
     }
     // seems there is no op with empty name, but there are tensors with empty name
-    bool is_anonymous = false;
-    if (!tensor_name.substr(0, tensor_name.find_first_of('_')).compare(EagerContext::kanonymous_op_name)) {
-      is_anonymous = true;
-    }
+    // bool is_anonymous = false;
+    // if (!tensor_name.substr(0, tensor_name.find_first_of('_')).compare(EagerContext::kanonymous_op_name)) {
+    //   is_anonymous = true;
+    // }
     
     t.RecordTensorAccess(tensor_name, time_);
-    if (stats != nullptr) {
+    if (is_valid) {
       auto pos = tensor_name.find_first_of(':');
+      if (pos == std::string::npos) {
+        LOG(FATAL) << "Invalid tensor name: " << tensor_name;
+      }
       std::string node_name = tensor_name.substr(0, pos);
       std::string slot_ = tensor_name.substr(pos+1, tensor_name.length());
       // int slot;
       // sscanf(slot_.c_str(), "%d", &slot);
       fout_in << "InputNode" << "\t" << node_name << "\t" << slot_ << "\n";
-      if (is_anonymous) {
-        fout_in << "\tShape: \t" << t.shape().DebugString() << "\n";
-        fout_in << "\tdata: \t" << t.data() << "\n";
-        fout_in << "\tbuffer: \t" << t.buffer() << "\n";
-      }
+      // if (is_anonymous) {
+      //   fout_in << "\tShape: \t" << t.shape().DebugString() << "\n";
+      //   fout_in << "\tdata: \t" << t.data() << "\n";
+      //   fout_in << "\tbuffer: \t" << t.buffer() << "\n";
+      // }
       if (log_tensor_access) {
         if (!tensor_access_fout.is_open()) {
           LOG(FATAL) << "Failed to open /tmp/tensor_access.txt";
@@ -229,6 +233,15 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
     }
 
     ms->set_persistent_memory_size(context.persistent_memory_allocated());
+
+    // record node output tensor
+    for(int i = 0; i < outputs->size(); i++) {
+      Tensor* v = &((*outputs)[i]);
+      DCHECK(v);
+      NodeOutput* no = stats->add_output();
+      no->set_slot(i);
+      v->FillDescription(no->mutable_tensor_description());
+    }
   }
   return Status::OK();
 }

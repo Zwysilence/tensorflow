@@ -1277,7 +1277,8 @@ string Tensor::DebugString() const {
 }
 
 void Tensor::DebugStringToFile(const string& tensor_name, const int64 step_id, bool is_gpu_tensor) {
-  const string log_dir = "/vpublic01/frog/vfonel/tensor_value/";
+  // const string log_dir = "/vpublic01/frog/vfonel/tensor_value/";
+  const string log_dir = "/home/frog/vfonel/tensor_value/";
 
   if (data() == nullptr) {
     LOG(ERROR) << "Tensor: " << tensor_name << " data is nullptr!";

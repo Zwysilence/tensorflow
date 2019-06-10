@@ -625,7 +625,7 @@ Status EagerExecute(EagerOperation* op,
               << op->Device()->name();
   }
 
-  LOG(INFO) << "EagerRemoteExecute: " << op->Name();
+  LOG(WARNING) << "no RecordTensorAccess implemented for EagerRemoteExecute"
   // TODO(px): no RecordTensorAccess implemented for EagerRemoteExecute
   return EagerRemoteExecute(op, retvals->data(), num_retvals);
 }
@@ -658,7 +658,8 @@ Status EagerExecute(EagerContext* ctx, Device* device,
   // TODO(agarwal): change Run to take vector of handles ?
   ScopedStepContainer* container = ctx->StepContainer();
   if (container == nullptr) {
-    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats, op_uname));
+    // HACK(px): set empty op_uname for op with null container which we don't want to track
+    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats, ""));
   } else {
     TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats, op_uname));
   }

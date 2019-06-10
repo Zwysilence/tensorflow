@@ -59,6 +59,7 @@ EagerContext::EagerContext(const SessionOptions& opts,
           &func_lib_def_, {}, thread_pool_.get())),
       log_device_placement_(opts.config.log_device_placement()),
       num_active_steps_(0),
+      total_steps_(0),
       async_default_(async),
       env_(opts.env),
       use_send_tensor_rpc_(false) {
@@ -72,7 +73,7 @@ EagerContext::EagerContext(const SessionOptions& opts,
   }
   record_op = (GetEnv("TF_RECORD_OP") == "true") ? true : false;
   LOG(INFO) << "TF_RECORD_OP: " << (record_op ? "true" : "false");
-  InitPerIterOpCount();
+  // InitPerIterOpCount();
   /* fout_in.open(innodes_file.c_str(), fout_in.out);
   if (!fout_in.is_open()) {
     LOG(INFO) << "Can not open innodes file: " << innodes_file;
@@ -231,10 +232,10 @@ Status EagerContext::FindDeviceByName(const string& name, Device** result) {
   return Status::OK();
 }
 
-void EagerContext::InitPerIterOpCount() {
+/* void EagerContext::InitPerIterOpCount() {
   std::string op_count_file = GetEnv(op_count_env);
   if (op_count_file.empty()) {
-    LOG(FATAL) << "Eager Execution needs specify a op count per iter file!";
+    LOG(INFO) << "There is no op count per iter file specified, can not do mem-opt then.";
     return;
   }
 
@@ -256,40 +257,73 @@ void EagerContext::InitPerIterOpCount() {
     op_per_iter_count_[op_name] = op_count;
   }
   fin.close();
-}
+} */
 
 void EagerContext::GetUniqueOpName(const std::string& op_name, std::string& op_uname) {
-  std::string name;
-  if (op_name.empty()) {
-    LOG(INFO) << "Get an empty op name";
-    name = kanonymous_op_name;
-  } else {
-    name = op_name;
-  }
   std::lock_guard<std::mutex> l(op_name_mu_);
-  auto it = op_name_count_.find(name);
+  auto it = op_name_count_.find(op_name);
   if (it != op_name_count_.end()) {
-    uint32 curr_id = it->second;
-    if (!op_per_iter_count_.count(name)) {
-      op_uname = name + '_' + std::to_string(it->second++);
-    } else {
-      // CHECK(op_per_iter_count_.count(op_name)) << op_name;
-      uint32 op_count_ = op_per_iter_count_[name];
-      if (curr_id == op_count_) {
-        // when reach a new iteration, reset the count to zero
-        it->second = 0;
-      }
-      op_uname = name + "_" + std::to_string(it->second++);
-    }    
+    op_uname = op_name + "_" + std::to_string(it->second++);
   } else {
-    op_uname = name + "_0";
-    op_name_count_[name] = 1;
+    op_uname = op_name + "_0";
+    op_name_count_[op_name] = 1;
   }
 }
 
 void EagerContext::StartStep() {
   mutex_lock ml(metadata_mu_);
+  std::lock_guard<std::mutex> l(op_name_mu_);
   num_active_steps_++;
+  total_steps_++;
+  /* if (total_steps_ == 15) {
+    should_store_metadata_.store(true);
+  } else if (total_steps_ == 16) {
+    should_store_metadata_.store(false);
+    // TODO(px): dump the metadata
+    // std::string out_dir = "/vpublic01/frog/vfonel/tf_static_graph/";
+    std::string out_dir = "/home/frog/vfonel/tf_static_graph/";
+    for (int dev_i = 0; dev_i < run_metadata_.step_stats().dev_stats_size(); ++dev_i) {
+      auto& dev_stat = run_metadata_.step_stats().dev_stats(dev_i);
+      std::string dev_name = dev_stat.device();
+      std::string fout_outputs_name = out_dir + dev_stat.device() + "_outputs.txt";
+      std::string fout_nodetime_name = out_dir + dev_stat.device() + "_nodetime.txt";
+      std::fstream fout_outputs(fout_outputs_name, fout_outputs.out);
+      std::fstream fout_nodetime(fout_nodetime_name, fout_nodetime.out);
+      if (!(fout_outputs.is_open() && fout_nodetime.is_open())) {
+        LOG(FATAL) << "Can not open runmetadata file!";
+      }
+      for (int i = 0; i < dev_stat.node_stats_size(); ++i) {
+        auto& node_stat = dev_stat.node_stats(i);
+        std::string node_name = node_stat.node_name();
+        if (!op_name_count_.count(node_name)) continue;
+        fout_nodetime << node_name << "\t"
+                      << node_stat.all_start_micros() << "\t"
+                      << node_stat.all_end_rel_micros() << "\n";
+        auto& outputs = node_stat.output();
+        fout_outputs << "SrcNode" << "\t"
+                     << node_name << "\t"
+                     << node_stat.output_size() << "\n";
+        for (auto output : outputs) {
+          int slot = output.slot();
+          auto& td = output.tensor_description();
+          auto& ad = td.allocation_description();
+          int64 requested_bytes = ad.requested_bytes();
+          int64 allocated_bytes = ad.allocated_bytes();
+          std::string allocator_name = ad.allocator_name();
+          // std::string tensor_name = node_name + ":" + std::to_string(slot);
+          fout_outputs << "Output" << "\t"
+                       << slot << "\t"
+                       << requested_bytes << "\t"
+                       << allocated_bytes << "\t"
+                       << allocator_name << "\t"
+                       << node_stat.all_start_micros() << "\n";
+        }
+      }
+      fout_outputs.close();
+      fout_nodetime.close();
+    }
+    run_metadata_.Clear();
+  } */
   if (step_container_ == nullptr) {
     step_container_.reset(
         new ScopedStepContainer(0, [this](const string& name) {
@@ -298,14 +332,28 @@ void EagerContext::StartStep() {
           }
         }));
   }
+  // reset op count to zero when start a new step
+  for (auto& it : op_name_count_) {
+    it.second = 0;
+  }
 }
 
 void EagerContext::EndStep() {
   mutex_lock ml(metadata_mu_);
+  // std::lock_guard<std::mutex> l(op_name_mu_);
   num_active_steps_--;
   if (num_active_steps_ == 0) {
     step_container_.reset();
   }
+  /* std::string fout_name = "/vpublic01/frog/vfonel/tf_eager_op_count/" + std::to_string(total_steps_) + ".txt";
+  std::fstream fout(fout_name, fout.out);
+  if (!fout.is_open()) {
+    LOG(FATAL) << "Can not open file: " << fout_name;
+  }
+  for (auto& it : op_name_count_) {
+    fout << it.first << "\t" << it.second << "\n";
+  }
+  fout.close(); */
 }
 
 ScopedStepContainer* EagerContext::StepContainer() {
