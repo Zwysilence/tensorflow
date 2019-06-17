@@ -59,7 +59,21 @@ class TensorHandle : public core::RefCounted {
         remote_output_num_(-1),
         remote_shape_node_id_(-1),
         ctx_(ctx),
-        is_ready_(true) {}
+        is_ready_(true),
+        is_recompute_(false) {}
+
+  TensorHandle(const Tensor& t, Device* d, Device* op_device, EagerContext* ctx, bool is_recompute)
+      : dtype(t.dtype()),
+        node_id_(0),
+        tensor_(t),
+        device_(d),
+        op_device_(op_device),
+        remote_op_id_(-1),
+        remote_output_num_(-1),
+        remote_shape_node_id_(-1),
+        ctx_(ctx),
+        is_ready_(true),
+        is_recompute_(is_recompute) {}
 
   TensorHandle(uint64 node_id, DataType dtype, EagerContext* ctx)
       : dtype(dtype),
@@ -71,7 +85,8 @@ class TensorHandle : public core::RefCounted {
         remote_output_num_(-1),
         remote_shape_node_id_(-1),
         ctx_(ctx),
-        is_ready_(ctx == nullptr) {
+        is_ready_(ctx == nullptr),
+        is_recompute_(false) {
     DCHECK_GT(node_id_, 0);
   }
 
@@ -88,7 +103,8 @@ class TensorHandle : public core::RefCounted {
         remote_shape_node_id_(remote_shape_node_id),
         call_on_destroy_(std::move(call_on_destroy)),
         ctx_(ctx),
-        is_ready_(true) {
+        is_ready_(true),
+        is_recompute_(false) {
     DCHECK(IsRemote()) << "Op ID and output num should be >= 0. Op ID: "
                        << op_id << ", Output num: " << output_num;
   }
@@ -146,6 +162,10 @@ class TensorHandle : public core::RefCounted {
            (ctx_ == nullptr || ctx_->HostCPU() == device_);
   }
 
+  bool IsRecompute() {
+    return is_recompute_;
+  }
+
  private:
   // If the contents of the Tensor pointed to by this handle is yet to be
   // computed by a EagerNode, this function will block till that compuatation is
@@ -195,6 +215,9 @@ class TensorHandle : public core::RefCounted {
   // `ctx` object is not owned and should outlive this handle.
   EagerContext* ctx_ GUARDED_BY(ctx_mutex_);
   bool is_ready_ GUARDED_BY(ctx_mutex_);
+
+  // recompute
+  bool is_recompute_;
 };
 
 }  // namespace tensorflow

@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/eager/execute.h"
 
 #include <vector>
+#include <deque>
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_set.h"
@@ -24,6 +25,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/eager/execute_node.h"
 #include "tensorflow/core/common_runtime/eager/kernel_and_device.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
+#include "tensorflow/core/common_runtime/recompute.h"
 #ifndef __ANDROID__
 #include "tensorflow/core/distributed_runtime/eager/eager_client.h"
 #include "tensorflow/core/distributed_runtime/eager/remote_execute_node.h"
@@ -39,6 +41,24 @@ limitations under the License.
 #include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
+
+struct VirtualNode {
+
+  struct OutputTensor {
+    int out_slot;
+    int in_slot;
+    VirtualNode* to_vnode;
+  };
+
+  gtl::InlinedVector<TensorHandle*, 4> inputs;  // update per iteration
+  std::vector<std::string> input_op_names;
+  std::vector<OutputTensor> output_tensors;
+  std::string op_name;
+  KernelAndDevice* kernel;
+};
+
+std::unordered_map<std::string, VirtualNode*> uop_vnode_map;
+std::mutex mu;
 
 namespace {
 
@@ -625,9 +645,180 @@ Status EagerExecute(EagerOperation* op,
               << op->Device()->name();
   }
 
-  LOG(WARNING) << "no RecordTensorAccess implemented for EagerRemoteExecute"
+  LOG(WARNING) << "no RecordTensorAccess implemented for EagerRemoteExecute";
   // TODO(px): no RecordTensorAccess implemented for EagerRemoteExecute
   return EagerRemoteExecute(op, retvals->data(), num_retvals);
+}
+
+void ParseTensorName(const std::string& tensor_name, std::string* op_name, int* slot) {
+  auto pos = tensor_name.find(':');
+  if (pos != std::string::npos) {
+    *op_name = tensor_name.substr(0, pos);
+    *slot = stoi(tensor_name.substr(pos+1));
+  } else {
+    *op_name = tensor_name;
+    *slot = 0;
+  }
+}
+
+void IncrementUsingCount(const std::vector<Tensor>& tensors) {
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  for (auto &t : tensors) {
+    recompute_helper->IncrementUsingCount(t.Name());
+  }
+}
+
+void DecrementUsingCount(const std::vector<Tensor>& tensors) {
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  for (auto &t : tensors) {
+    recompute_helper->DecrementUsingCount(t.Name());
+  }
+}
+
+void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel, const gtl::InlinedVector<TensorHandle*, 4>& inputs) {
+  std::lock_guard<std::mutex> l(mu);
+  VirtualNode* vnode = nullptr;
+  bool first_time = false; // initialize output_tensors and input_op_names of vnode if op is running the first time
+  if (!uop_vnode_map.count(op_uname)) {
+    uop_vnode_map[op_uname] = new VirtualNode;
+    vnode = uop_vnode_map[op_uname];
+    vnode->op_name = op_uname;
+    vnode->kernel = kernel;
+    first_time = true;
+  } else {
+    vnode = uop_vnode_map[op_uname];
+  }
+  vnode->inputs = inputs;  // need update inputs every iteration
+
+  // Ref tensors that have no name every iteration
+  for (int i = 0; i < inputs.size(); ++i) {
+    const Tensor* input_tensor = nullptr;
+    inputs[i]->Tensor(&input_tensor);
+    if (input_tensor->Name().empty()) {
+      inputs[i]->Ref();
+    }
+  }
+
+  // create relationship between vnodes
+  std::string in_op;
+  int slot;
+  if (first_time) {
+    for (int i = 0; i < inputs.size(); ++i) {
+      const Tensor* input_tensor = nullptr;
+      inputs[i]->Tensor(&input_tensor);
+      if (input_tensor->Name().empty()) continue;
+      ParseTensorName(input_tensor->Name(), &in_op, &slot);
+      if (!uop_vnode_map.count(in_op)) {
+        LOG(FATAL) << "Did not record the op " << in_op << "\n";
+      }
+      auto in_vnode = uop_vnode_map[in_op];
+      in_vnode->output_tensors.emplace_back(slot, i, vnode);
+      vnode->input_op_names.push_back(in_op);
+    }
+  }
+}
+
+void SaveRecomputeTensors(std::vector<Tensor>& tensors, const std::string& target_tensor) {
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  for (int i = 0; i < tensors.size(); ++i) {
+    recompute_helper->SaveRecomputedTensor(target_tensor, false/*not a ref*/, {tensors[i].Name(), &tensors[i]});
+  }
+}
+
+void ReverseBFS(const std::string& target_op, const std::unordered_set<std::string>& feed_ops, std::vector<std::string>* recompute_ops) {
+  std::deque<std::string> queue;
+  queue.push_back(target_op);
+  std::unordered_set<std::string> visited(feed_ops);
+  while(!queue.empty()) {
+    std::string op = queue.front();
+    queue.pop_front();
+    recompute_ops->push_back(op);
+    if (!uop_vnode_map.count(op)) {
+      LOG(FATAL) << "Did not record the op " << op << "\n";
+    }
+    auto vnode = uop_vnode_map[op];
+    for (auto& in : vnode->input_op_names) {
+      if (!visited.count(in)) {
+        queue.push_back(in);
+        visited.insert(in);
+      }
+    }
+  }
+}
+
+void ExtractOps(const std::vector<std::string>& tensors, std::unordered_set<std::string>* ops) {
+  std::string op;
+  int slot;
+  for (auto& tname : tensors) {
+    ParseTensorName(tname, &op, &slot);
+    ops->insert(op);
+  }
+}
+
+void RealRecompute(const std::vector<std::string>& recompute_ops, const std::string& target_tensor) {
+  std::unordered_set<std::string> recompute_op_set(recompute_ops.begin(), recompute_ops.end());
+  std::vector<std::string> recompute_op_stack(recompute_ops);
+  while(!recompute_ops.empty()) {
+    std::string op = recompute_op_stack.back();
+    recompute_op_stack.pop_back();
+    if (!uop_vnode_map.count(op)) {
+      LOG(FATAL) << "Did not record the op " << op << "\n";
+    }
+    auto vnode = uop_vnode_map[op];
+    auto kernel = vnode->kernel;
+    auto& input_handles = vnode->inputs;
+
+    // prepare inputs
+    std::vector<Tensor> inputs(input_handles.size());
+    for (int i = 0; i < input_handles.size(); ++i) {
+      const Tensor* input_tensor = nullptr;
+      input_handles[i]->Tensor(&input_tensor);
+      inputs[i] = *input_tensor;
+    }
+    std::vector<Tensor> outputs(1);
+    // TODO: maybe it's a mistake to call Run without container
+    kernel->Run(&inputs, &outputs, nullptr, vnode->op_name);
+
+    // Unref inputs
+    for (int i = 0; i < input_handles.size(); ++i) {
+      const Tensor* input_tensor = nullptr;
+      input_handles[i]->Tensor(&input_tensor);
+      if (input_tensor->Name().empty() || input_handles[i]->IsRecompute()) {
+        input_handles[i]->Unref();
+      }
+    }
+
+    // process outputs
+    const auto& output_tensors = vnode->output_tensors;
+    for (auto& ot : output_tensors) {
+      if (recompute_op_set.count(ot.to_vnode->op_name))
+        ot.to_vnode->inputs[ot.in_slot] = new TensorHandle(outputs[ot.out_slot], nullptr, nullptr, nullptr, true/*is_recompute*/);
+    }
+    SaveRecomputeTensors(outputs, target_tensor);
+  }
+}
+
+void Recompute(const std::string& target_tensor, const std::vector<std::string>& feed_tensors) {
+  std::vector<std::string> recompute_ops;
+  std::string target_op;
+  int target_slot;
+  ParseTensorName(target_tensor, &target_op, &target_slot);
+  std::unordered_set<std::string> feed_ops;
+  ExtractOps(feed_tensors, &feed_ops);
+  ReverseBFS(target_op, feed_ops, &recompute_ops);
+  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_ops);
+  RealRecompute(recompute_ops, target_tensor);
+}
+
+void CollectOutputs(std::vector<Tensor>& outputs) {
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  for (int i = 0; i < outputs.size(); ++i) {
+    recompute_helper->RecordTensorBuffer(outputs[i].Name(), &outputs[i]);
+    recompute_helper->RecordRecomputeCall(outputs[i].Name(), [](const std::string& target_tensor,
+                                                               const std::vector<std::string>& feed_tensors) {
+                                                                 Recompute(target_tensor, feed_tensors);
+                                                               });
+  }
 }
 
 Status EagerExecute(EagerContext* ctx, Device* device,
@@ -653,6 +844,10 @@ Status EagerExecute(EagerContext* ctx, Device* device,
     TF_RETURN_IF_ERROR(op_inputs[i]->Tensor(&input_tensor));
     inputs[i] = *input_tensor;
   }
+
+  RecordKernelAndInputs(op_uname, kernel, op_inputs);
+  IncrementUsingCount(inputs);
+
   //  TODO(apassos) figure out how to record stats for ops which are a part of
   //  functions.
   // TODO(agarwal): change Run to take vector of handles ?
@@ -663,6 +858,9 @@ Status EagerExecute(EagerContext* ctx, Device* device,
   } else {
     TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats, op_uname));
   }
+
+  DecrementUsingCount(inputs);
+
   if (maybe_stats != nullptr) {
     int64 nanos = Env::Default()->NowNanos();
     maybe_stats->set_op_end_rel_micros(nanos / EnvTime::kMicrosToNanos -
