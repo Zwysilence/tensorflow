@@ -275,6 +275,7 @@ void EagerContext::StartStep() {
   std::lock_guard<std::mutex> l(op_name_mu_);
   num_active_steps_++;
   total_steps_++;
+  uop_vnode_map.clear();
   /* if (total_steps_ == 15) {
     should_store_metadata_.store(true);
   } else if (total_steps_ == 16) {
@@ -345,6 +346,7 @@ void EagerContext::EndStep() {
   if (num_active_steps_ == 0) {
     step_container_.reset();
   }
+  LOG(INFO) << "EndStep";
   /* std::string fout_name = "/vpublic01/frog/vfonel/tf_eager_op_count/" + std::to_string(total_steps_) + ".txt";
   std::fstream fout(fout_name, fout.out);
   if (!fout.is_open()) {

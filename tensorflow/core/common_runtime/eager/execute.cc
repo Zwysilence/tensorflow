@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/common_runtime/eager/execute.h"
+#include "tensorflow/core/common_runtime/eager/recompute.h"
 
 #include <vector>
 #include <deque>
@@ -42,22 +43,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-struct VirtualNode {
-
-  struct OutputTensor {
-    int out_slot;
-    int in_slot;
-    VirtualNode* to_vnode;
-  };
-
-  gtl::InlinedVector<TensorHandle*, 4> inputs;  // update per iteration
-  std::vector<std::string> input_op_names;
-  std::vector<OutputTensor> output_tensors;
-  std::string op_name;
-  KernelAndDevice* kernel;
-};
-
-std::unordered_map<std::string, VirtualNode*> uop_vnode_map;
+class VirtualNode;
+extern std::unordered_map<std::string, VirtualNode*> uop_vnode_map;
 std::mutex mu;
 
 namespace {
@@ -662,20 +649,29 @@ void ParseTensorName(const std::string& tensor_name, std::string* op_name, int* 
 }
 
 void IncrementUsingCount(const std::vector<Tensor>& tensors) {
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
   for (auto &t : tensors) {
     recompute_helper->IncrementUsingCount(t.Name());
   }
 }
 
 void DecrementUsingCount(const std::vector<Tensor>& tensors) {
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
   for (auto &t : tensors) {
     recompute_helper->DecrementUsingCount(t.Name());
   }
 }
 
-void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel, const gtl::InlinedVector<TensorHandle*, 4>& inputs) {
+bool IsVariableOp(const std::string& op) {
+  static const std::string var_prefix = "VarHandleOp";
+  int sz = var_prefix.size();
+  if (op.size() >= sz && op.substr(0, sz) == var_prefix) {
+    return true;
+  }
+  return false;
+}
+
+void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel, ScopedStepContainer* container, const gtl::InlinedVector<TensorHandle*, 4>& inputs) {
   std::lock_guard<std::mutex> l(mu);
   VirtualNode* vnode = nullptr;
   bool first_time = false; // initialize output_tensors and input_op_names of vnode if op is running the first time
@@ -689,19 +685,26 @@ void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel,
     vnode = uop_vnode_map[op_uname];
   }
   vnode->inputs = inputs;  // need update inputs every iteration
+  vnode->container = container;
+
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
+  int should_ref_count = recompute_helper->ShouldRefCount(op_uname);
 
   // Ref tensors that have no name every iteration
-  for (int i = 0; i < inputs.size(); ++i) {
-    const Tensor* input_tensor = nullptr;
-    inputs[i]->Tensor(&input_tensor);
-    if (input_tensor->Name().empty()) {
-      inputs[i]->Ref();
+  if (should_ref_count) {
+    for (int i = 0; i < inputs.size(); ++i) {
+      const Tensor* input_tensor = nullptr;
+      inputs[i]->Tensor(&input_tensor);
+      if (input_tensor->Name().empty()) {
+        for (int j = 0; j < should_ref_count; ++j) inputs[i]->Ref();
+      }
     }
   }
 
   // create relationship between vnodes
   std::string in_op;
   int slot;
+
   if (first_time) {
     for (int i = 0; i < inputs.size(); ++i) {
       const Tensor* input_tensor = nullptr;
@@ -709,17 +712,18 @@ void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel,
       if (input_tensor->Name().empty()) continue;
       ParseTensorName(input_tensor->Name(), &in_op, &slot);
       if (!uop_vnode_map.count(in_op)) {
-        LOG(FATAL) << "Did not record the op " << in_op << "\n";
+        vnode->input_op_names.push_back(in_op);
+      } else {
+        auto in_vnode = uop_vnode_map[in_op];
+        in_vnode->output_tensors.emplace_back(slot, i, vnode);
+        vnode->input_op_names.push_back(in_op);
       }
-      auto in_vnode = uop_vnode_map[in_op];
-      in_vnode->output_tensors.emplace_back(slot, i, vnode);
-      vnode->input_op_names.push_back(in_op);
     }
   }
 }
 
 void SaveRecomputeTensors(std::vector<Tensor>& tensors, const std::string& target_tensor) {
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
   for (int i = 0; i < tensors.size(); ++i) {
     recompute_helper->SaveRecomputedTensor(target_tensor, false/*not a ref*/, {tensors[i].Name(), &tensors[i]});
   }
@@ -734,7 +738,9 @@ void ReverseBFS(const std::string& target_op, const std::unordered_set<std::stri
     queue.pop_front();
     recompute_ops->push_back(op);
     if (!uop_vnode_map.count(op)) {
-      LOG(FATAL) << "Did not record the op " << op << "\n";
+      //LOG(FATAL) << "Did not record the op " << op << "\n";
+      visited.insert(op);
+      continue;
     }
     auto vnode = uop_vnode_map[op];
     for (auto& in : vnode->input_op_names) {
@@ -755,14 +761,15 @@ void ExtractOps(const std::vector<std::string>& tensors, std::unordered_set<std:
   }
 }
 
-void RealRecompute(const std::vector<std::string>& recompute_ops, const std::string& target_tensor) {
-  std::unordered_set<std::string> recompute_op_set(recompute_ops.begin(), recompute_ops.end());
+void RealRecompute(const std::vector<std::string>& recompute_ops, const std::vector<std::string>& need_recompute_tensors, const std::string& target_tensor) {
+  std::unordered_set<std::string> recompute_op_set(recompute_ops.begin(), recompute_ops.end()), need_recompute_tensor_set(need_recompute_tensors.begin(), need_recompute_tensors.end());
   std::vector<std::string> recompute_op_stack(recompute_ops);
-  while(!recompute_ops.empty()) {
+  while(!recompute_op_stack.empty()) {
     std::string op = recompute_op_stack.back();
     recompute_op_stack.pop_back();
     if (!uop_vnode_map.count(op)) {
-      LOG(FATAL) << "Did not record the op " << op << "\n";
+      //LOG(FATAL) << "Did not record the op " << op << "\n";
+      continue;
     }
     auto vnode = uop_vnode_map[op];
     auto kernel = vnode->kernel;
@@ -773,11 +780,36 @@ void RealRecompute(const std::vector<std::string>& recompute_ops, const std::str
     for (int i = 0; i < input_handles.size(); ++i) {
       const Tensor* input_tensor = nullptr;
       input_handles[i]->Tensor(&input_tensor);
+      if (op == "Add_64") {
+        LOG(INFO) << "Add_64 input_handles[" << i << "] = " << input_handles[i];
+      }
+      if (input_tensor == nullptr) {
+        LOG(INFO) << op << "'s " << i << "th input is nullptr";
+      } else if (op == "Add_64") {
+        LOG(INFO) << op << "'s " << i << "th input is " << input_tensor->Name();
+      }
       inputs[i] = *input_tensor;
     }
+
     std::vector<Tensor> outputs(1);
     // TODO: maybe it's a mistake to call Run without container
-    kernel->Run(&inputs, &outputs, nullptr, vnode->op_name);
+    if (vnode->container) {
+      // LOG(INFO) << "container is not nullptr";
+      kernel->Run(vnode->container, &inputs, &outputs, nullptr, vnode->op_name, true);
+    } else {
+      // LOG(INFO) << "container is nullptr";
+      kernel->Run(&inputs, &outputs, nullptr, vnode->op_name, true);
+    }
+
+    for (int i = 0; i < outputs.size(); ++i) {
+      std::string tensor_name = op + ":" + std::to_string(i);
+      outputs[i].SetName(tensor_name);
+      if (outputs[i].buffer() == nullptr) {
+        LOG(FATAL) << tensor_name << "'s buffer is nullptr.";
+      } else if (outputs[i].data() == nullptr) {
+        LOG(FATAL) << tensor_name << "'s data is nullptr";
+      }
+    }
 
     // Unref inputs
     for (int i = 0; i < input_handles.size(); ++i) {
@@ -789,16 +821,23 @@ void RealRecompute(const std::vector<std::string>& recompute_ops, const std::str
     }
 
     // process outputs
-    const auto& output_tensors = vnode->output_tensors;
-    for (auto& ot : output_tensors) {
-      if (recompute_op_set.count(ot.to_vnode->op_name))
-        ot.to_vnode->inputs[ot.in_slot] = new TensorHandle(outputs[ot.out_slot], nullptr, nullptr, nullptr, true/*is_recompute*/);
+    if (!recompute_op_stack.empty()) {
+      const auto& output_tensors = vnode->output_tensors;
+      for (auto& ot : output_tensors) {
+        if (recompute_op_set.count(ot.to_vnode->op_name))
+          ot.to_vnode->inputs[ot.in_slot] = new TensorHandle(outputs[ot.out_slot], nullptr, nullptr, nullptr, true/*is_recompute*/);
+      }
     }
-    SaveRecomputeTensors(outputs, target_tensor);
+
+    EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
+    for (int i = 0; i < outputs.size(); ++i) {
+      if (need_recompute_tensor_set.count(outputs[i].Name()))
+        recompute_helper->SaveRecomputedTensor(target_tensor, false/*not a ref*/, {outputs[i].Name(), &outputs[i]});
+    }
   }
 }
 
-void Recompute(const std::string& target_tensor, const std::vector<std::string>& feed_tensors) {
+void Recompute(const std::string& target_tensor, const std::vector<std::string>& recompute_tensors, const std::vector<std::string>& feed_tensors) {
   std::vector<std::string> recompute_ops;
   std::string target_op;
   int target_slot;
@@ -806,17 +845,18 @@ void Recompute(const std::string& target_tensor, const std::vector<std::string>&
   std::unordered_set<std::string> feed_ops;
   ExtractOps(feed_tensors, &feed_ops);
   ReverseBFS(target_op, feed_ops, &recompute_ops);
-  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_ops);
-  RealRecompute(recompute_ops, target_tensor);
+  EagerRecomputeHelper::GlobalEagerRecomputeHelper()->SetRecomputing(target_tensor);
+  RealRecompute(recompute_ops, recompute_tensors, target_tensor);
 }
 
 void CollectOutputs(std::vector<Tensor>& outputs) {
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
   for (int i = 0; i < outputs.size(); ++i) {
     recompute_helper->RecordTensorBuffer(outputs[i].Name(), &outputs[i]);
     recompute_helper->RecordRecomputeCall(outputs[i].Name(), [](const std::string& target_tensor,
+                                                               const std::vector<std::string>& recompute_tensors,
                                                                const std::vector<std::string>& feed_tensors) {
-                                                                 Recompute(target_tensor, feed_tensors);
+                                                                 Recompute(target_tensor, recompute_tensors, feed_tensors);
                                                                });
   }
 }
@@ -835,31 +875,59 @@ Status EagerExecute(EagerContext* ctx, Device* device,
     LOG(INFO) << op_uname;
   }
 
+  uint64 time_ = Env::Default()->NowMicros();
+
   std::vector<Tensor> outputs(1);
   const MemoryTypeVector* output_memory_types = nullptr;
   output_memory_types = &kernel->kernel()->output_memory_types();
   std::vector<Tensor> inputs(op_inputs.size());
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
   for (int i = 0; i < op_inputs.size(); ++i) {
     const Tensor* input_tensor = nullptr;
     TF_RETURN_IF_ERROR(op_inputs[i]->Tensor(&input_tensor));
     inputs[i] = *input_tensor;
   }
 
-  RecordKernelAndInputs(op_uname, kernel, op_inputs);
+  ScopedStepContainer* container = ctx->StepContainer();
+
+  RecordKernelAndInputs(op_uname, kernel, container, op_inputs);
   IncrementUsingCount(inputs);
 
+  for (int i = 0; i < op_inputs.size(); ++i) {
+    if (!inputs[i].Name().empty()) {
+      recompute_helper->RecordTensorAccess(inputs[i].Name(), time_);
+      if (IsVariableOp(inputs[i].Name())) {
+        LOG(INFO) << "Access " << inputs[i].Name();
+      }
+    }
+  }
+
+  if (IsVariableOp(op_uname)) {
+    LOG(INFO) << "Execute VariableOp " << op_uname;
+  }
+
+  if (op_uname == "Relu_42" || op_uname == "Conv2DBackpropFilter_52") {
+    LOG(INFO) << " execute " << op_uname;
+  }
+  
   //  TODO(apassos) figure out how to record stats for ops which are a part of
   //  functions.
   // TODO(agarwal): change Run to take vector of handles ?
-  ScopedStepContainer* container = ctx->StepContainer();
   if (container == nullptr) {
     // HACK(px): set empty op_uname for op with null container which we don't want to track
-    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats, ""));
+    TF_RETURN_IF_ERROR(kernel->Run(&inputs, &outputs, maybe_stats, "", false));
   } else {
-    TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats, op_uname));
+    TF_RETURN_IF_ERROR(kernel->Run(container, &inputs, &outputs, maybe_stats, op_uname, false));
   }
 
   DecrementUsingCount(inputs);
+
+  for (int i = 0; i < outputs.size(); ++i) {
+    std::string tensor_name = op_uname + ":" + std::to_string(i);
+    outputs[i].SetName(tensor_name);
+    // outputs[i].RecordSwapContext({tensor_name, nullptr, nullptr});
+  }
+  CollectOutputs(outputs);
 
   if (maybe_stats != nullptr) {
     int64 nanos = Env::Default()->NowNanos();

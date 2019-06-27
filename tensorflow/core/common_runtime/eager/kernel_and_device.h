@@ -62,10 +62,10 @@ class KernelAndDevice {
 
   // TODO(ashankar): Handle list-valued inputs.
   Status Run(std::vector<Tensor>* inputs, std::vector<Tensor>* outputs,
-             NodeExecStats* stats, const std::string& op_uname);
+             NodeExecStats* stats, const std::string& op_uname, bool is_recompute);
 
   Status Run(ScopedStepContainer* step_container, std::vector<Tensor>* inputs,
-             std::vector<Tensor>* outputs, NodeExecStats* stats, const std::string& op_uname);
+             std::vector<Tensor>* outputs, NodeExecStats* stats, const std::string& op_uname, bool is_recompute);
 
   const OpKernel* kernel() const { return kernel_.get(); }
 

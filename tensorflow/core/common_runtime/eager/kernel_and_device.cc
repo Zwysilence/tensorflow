@@ -85,18 +85,20 @@ Status KernelAndDevice::Init(const NodeDef& ndef, FunctionLibraryRuntime* flib,
 Status KernelAndDevice::Run(std::vector<Tensor>* inputs,
                             std::vector<Tensor>* outputs,
                             NodeExecStats* stats,
-                            const std::string& op_uname) {
+                            const std::string& op_uname,
+                            bool is_recompute) {
   ScopedStepContainer step_container(0, [this](const string& name) {
     device_->resource_manager()->Cleanup(name).IgnoreError();
   });
-  return this->Run(&step_container, inputs, outputs, stats, op_uname);
+  return this->Run(&step_container, inputs, outputs, stats, op_uname, is_recompute);
 }
 
 Status KernelAndDevice::Run(ScopedStepContainer* step_container,
                             std::vector<Tensor>* inputs,
                             std::vector<Tensor>* outputs,
                             NodeExecStats* stats,
-                            const std::string& op_uname) {
+                            const std::string& op_uname,
+                            bool is_recompute) {
   gtl::InlinedVector<TensorValue, 4> input_vector;
   uint64 time_ = Env::Default()->NowMicros();
   static bool log_tensor_access = (GetEnv("TF_LOG_TENSOR_ACCESS") == "true") ? true : false;
@@ -131,7 +133,6 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
     //   is_anonymous = true;
     // }
     
-    t.RecordTensorAccess(tensor_name, time_);
     if (is_valid) {
       auto pos = tensor_name.find_first_of(':');
       if (pos == std::string::npos) {
@@ -200,17 +201,20 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
   if (!context.status().ok()) return context.status();
 
   outputs->clear();
-  DeviceContext* dev_ctx = context.op_device_context();
-  CHECK(dev_ctx);
   /* if (dev_ctx == nullptr) {
     // TODO(px): if this happen, get from device
     LOG(FATAL) << "Can not get DeviceContext from OpKernelContext.";
   } */
   for (int i = 0; i < context.num_outputs(); ++i) {
     outputs->push_back(Tensor(*context.mutable_output(i)));
-    if (op_uname.empty()) continue;
-    std::string tensor_name = op_uname + ":" + std::to_string(i);
-    outputs->back().RecordSwapContext({tensor_name, device_, dev_ctx});
+    // add a debug for recompute to check if the tensor.buf is null
+    if (is_recompute) {
+      if (outputs->back().buffer() == nullptr) {
+        LOG(INFO) << op_uname << "'s outputs " << i << " buffer is nullptr";
+      } else if (outputs->back().data() == nullptr) {
+        LOG(INFO) << op_uname << "'s outputs " << i << " data is nullptr";
+      }
+    }
   }
   if (stats != nullptr) {
     for (const auto& allocator_pair : context.wrapped_allocators()) {

@@ -163,6 +163,31 @@ tf_cuda_library(
     }),
 )
 
+tf_cuda_library(
+    name = "recompute",
+    srcs = [
+        "recompute.cc",
+    ],
+    hdrs = [
+        "recompute.h",
+    ],
+    visibility = ["//tensorflow:internal"],
+    deps = select({
+        "//tensorflow:android": [
+            "//tensorflow/core:android_tensorflow_lib_lite",
+            "//util/hash:farmhash_fingerprint",
+        ],
+        "//conditions:default": [
+            "//tensorflow/core:core_cpu_lib",
+            "//tensorflow/core:framework",
+            "//tensorflow/core:framework_internal",
+            "//tensorflow/core:lib",
+            "//tensorflow/core:lib_internal",
+            "//tensorflow/core:protos_all_cc",
+        ],
+    }),
+)
+
 tf_cc_test(
     name = "kernel_and_device_test",
     srcs = ["kernel_and_device_test.cc"],
@@ -196,6 +221,7 @@ cc_library(
         ":eager_operation",
         ":kernel_and_device",
         ":tensor_handle",
+        ":recompute",
     ] + select({
         "//tensorflow:android": [
             "//tensorflow/core:android_tensorflow_lib_lite",
