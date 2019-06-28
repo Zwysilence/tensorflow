@@ -673,24 +673,22 @@ bool IsVariableOp(const std::string& op) {
 
 void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel, ScopedStepContainer* container, const gtl::InlinedVector<TensorHandle*, 4>& inputs) {
   std::lock_guard<std::mutex> l(mu);
+  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
+
   VirtualNode* vnode = nullptr;
-  bool first_time = false; // initialize output_tensors and input_op_names of vnode if op is running the first time
   if (!uop_vnode_map.count(op_uname)) {
     uop_vnode_map[op_uname] = new VirtualNode;
     vnode = uop_vnode_map[op_uname];
     vnode->op_name = op_uname;
     vnode->kernel = kernel;
-    first_time = true;
   } else {
     vnode = uop_vnode_map[op_uname];
   }
   vnode->inputs = inputs;  // need update inputs every iteration
   vnode->container = container;
 
-  EagerRecomputeHelper* recompute_helper = EagerRecomputeHelper::GlobalEagerRecomputeHelper();
-  int should_ref_count = recompute_helper->ShouldRefCount(op_uname);
-
   // Ref tensors that have no name every iteration
+  int should_ref_count = recompute_helper->ShouldRefCount(op_uname);
   if (should_ref_count) {
     for (int i = 0; i < inputs.size(); ++i) {
       const Tensor* input_tensor = nullptr;
@@ -705,19 +703,26 @@ void RecordKernelAndInputs(const std::string& op_uname, KernelAndDevice* kernel,
   std::string in_op;
   int slot;
 
-  if (first_time) {
-    for (int i = 0; i < inputs.size(); ++i) {
-      const Tensor* input_tensor = nullptr;
-      inputs[i]->Tensor(&input_tensor);
-      if (input_tensor->Name().empty()) continue;
-      ParseTensorName(input_tensor->Name(), &in_op, &slot);
-      if (!uop_vnode_map.count(in_op)) {
-        vnode->input_op_names.push_back(in_op);
-      } else {
-        auto in_vnode = uop_vnode_map[in_op];
-        in_vnode->output_tensors.emplace_back(slot, i, vnode);
-        vnode->input_op_names.push_back(in_op);
-      }
+  // clear old connections
+  for (auto& in_op : vnode->input_op_names) {
+    if (!uop_vnode_map.count(in_op)) continue;
+    auto in_vnode = uop_vnode_map[in_op];
+    in_vnode->output_tensors.erase(in_op);
+  }
+  vnode->input_op_names.clear();
+  // build new connections
+  for (int i = 0; i < inputs.size(); ++i) {
+    const Tensor* input_tensor = nullptr;
+    inputs[i]->Tensor(&input_tensor);
+    if (input_tensor->Name().empty()) continue;
+    ParseTensorName(input_tensor->Name(), &in_op, &slot);
+    if (!uop_vnode_map.count(in_op)) {
+      // vnode->input_op_names.push_back(in_op);
+      LOG(FATAL) << "Didn't record " << in_op;
+    } else {
+      auto in_vnode = uop_vnode_map[in_op];
+      in_vnode->output_tensors.insert({op_uname, {slot, i, vnode}});
+      vnode->input_op_names.push_back(in_op);
     }
   }
 }
@@ -780,13 +785,8 @@ void RealRecompute(const std::vector<std::string>& recompute_ops, const std::vec
     for (int i = 0; i < input_handles.size(); ++i) {
       const Tensor* input_tensor = nullptr;
       input_handles[i]->Tensor(&input_tensor);
-      if (op == "Add_64") {
-        LOG(INFO) << "Add_64 input_handles[" << i << "] = " << input_handles[i];
-      }
       if (input_tensor == nullptr) {
-        LOG(INFO) << op << "'s " << i << "th input is nullptr";
-      } else if (op == "Add_64") {
-        LOG(INFO) << op << "'s " << i << "th input is " << input_tensor->Name();
+        LOG(FATAL) << op << "'s " << i << "th input is nullptr " << input_handles[i];
       }
       inputs[i] = *input_tensor;
     }
@@ -824,8 +824,9 @@ void RealRecompute(const std::vector<std::string>& recompute_ops, const std::vec
     if (!recompute_op_stack.empty()) {
       const auto& output_tensors = vnode->output_tensors;
       for (auto& ot : output_tensors) {
-        if (recompute_op_set.count(ot.to_vnode->op_name))
-          ot.to_vnode->inputs[ot.in_slot] = new TensorHandle(outputs[ot.out_slot], nullptr, nullptr, nullptr, true/*is_recompute*/);
+        //if (recompute_op_set.count(ot.to_vnode->op_name))
+        if (recompute_op_set.count(ot.first))
+          ot.second.to_vnode->inputs[ot.second.in_slot] = new TensorHandle(outputs[ot.second.out_slot], nullptr, nullptr, nullptr, true/*is_recompute*/);
       }
     }
 
@@ -896,20 +897,9 @@ Status EagerExecute(EagerContext* ctx, Device* device,
   for (int i = 0; i < op_inputs.size(); ++i) {
     if (!inputs[i].Name().empty()) {
       recompute_helper->RecordTensorAccess(inputs[i].Name(), time_);
-      if (IsVariableOp(inputs[i].Name())) {
-        LOG(INFO) << "Access " << inputs[i].Name();
-      }
     }
   }
 
-  if (IsVariableOp(op_uname)) {
-    LOG(INFO) << "Execute VariableOp " << op_uname;
-  }
-
-  if (op_uname == "Relu_42" || op_uname == "Conv2DBackpropFilter_52") {
-    LOG(INFO) << " execute " << op_uname;
-  }
-  
   //  TODO(apassos) figure out how to record stats for ops which are a part of
   //  functions.
   // TODO(agarwal): change Run to take vector of handles ?

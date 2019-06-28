@@ -26,7 +26,6 @@ void EagerRecomputeHelper::RecordTensorAccess(const std::string& tensor_name, co
     volatile int* ready = &(recompute_params.data_ready);
     std::unique_lock<std::mutex> l(*(cv_mu.second));
     cv_mu.first->wait(l, [ready]() { return *ready == DataStatus::IN; });
-    LOG(INFO) << "data ready of " << tensor_name << " is " << *ready;
   }
 
   if (!triggers_.count(tensor_name)) {
@@ -85,7 +84,9 @@ void EagerRecomputeHelper::SetRecomputing(const std::string& target) {
 void EagerRecomputeHelper::SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed) {
   if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first))
     return;
+  #ifdef _DEBUG
   LOG(INFO) << "Save " << recomputed.first;
+  #endif
   if (recomputed.second->data() == nullptr) LOG(INFO) << recomputed.second->Name() << " is null";
   saved_tensors_[target][recomputed.first] = *(recomputed.second);
   if (is_ref) {
@@ -112,7 +113,6 @@ void EagerRecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
   #endif
     *ready = DataStatus::RECOMPUTING;
     ul.unlock();
-    LOG(INFO) << "size of feed tensors " << params.feed_tensors.size();
     recompute_calls_[tensor_name](params.target_tensor, recompute_tensors_[tensor_name], params.feed_tensors);
     SetRecomputedTensors(tensor_name);
   }
@@ -128,7 +128,6 @@ void EagerRecomputeHelper::SetRecomputedTensors(const std::string& target) {
     if (params.data_ready != DataStatus::IN) {
       if (params.buf->data() != nullptr)
         LOG(FATAL) << "Buffer data should be null";
-      LOG(INFO) << "SetRecomputedTensors " << t.first << " " << params.buf << " " << t.second.data();
       params.buf->set_data(t.second.data());
       t.second.set_data(nullptr);
       params.data_ready = DataStatus::IN;

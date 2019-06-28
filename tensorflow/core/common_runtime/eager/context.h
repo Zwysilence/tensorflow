@@ -79,7 +79,8 @@ struct VirtualNode {
 
   gtl::InlinedVector<TensorHandle*, 4> inputs;  // update per iteration
   std::vector<std::string> input_op_names;
-  std::vector<OutputTensor> output_tensors;
+  //std::vector<OutputTensor> output_tensors;
+  std::unordered_map<std::string, OutputTensor> output_tensors;
   std::string op_name;
   KernelAndDevice* kernel;
   ScopedStepContainer* container; 

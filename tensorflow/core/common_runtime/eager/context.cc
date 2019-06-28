@@ -275,7 +275,6 @@ void EagerContext::StartStep() {
   std::lock_guard<std::mutex> l(op_name_mu_);
   num_active_steps_++;
   total_steps_++;
-  uop_vnode_map.clear();
   /* if (total_steps_ == 15) {
     should_store_metadata_.store(true);
   } else if (total_steps_ == 16) {
