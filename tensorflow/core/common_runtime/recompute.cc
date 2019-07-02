@@ -68,7 +68,7 @@ void RecomputeHelper::SetRecomputing(const std::string& target_tensor, const std
 }
 
 void RecomputeHelper::SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed) {
-  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first))
+  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first) || !recompute_tensors_[target].count(recomputed.first))
     return;
   saved_tensors_[target][recomputed.first] = *(recomputed.second);
   if (is_ref) {
