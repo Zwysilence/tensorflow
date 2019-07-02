@@ -48,6 +48,9 @@ EventMgr::~EventMgr() {
   for (auto& e : free_events_) {
     delete e;
   }
+  for (auto& se: swap_events_) {
+    delete se;
+  }
   for (auto& t : *(accumulated_tensors_)) {
     t.Unref();
   }

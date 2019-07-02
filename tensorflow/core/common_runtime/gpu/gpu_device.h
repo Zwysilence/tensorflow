@@ -79,6 +79,10 @@ class BaseGPUDevice : public LocalDevice {
 
   void CheckInputs(OpKernelContext* context, bool* flag, bool before);
 
+  void CheckInputs(gpu::Stream* stream,
+                   OpKernelContext* context,
+                   bool before);
+
 
   // void IncreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers);
   // void DecreaseUsingCount(se::Stream* stream, const HashBufferVector& input_buffers);

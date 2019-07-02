@@ -72,16 +72,73 @@ class GPUBFCAllocator : public BFCAllocator {
 
   void Notify(TensorBuffer* tensor_buf) override;
 
+  typedef std::function<void()> Closure;
+  typedef std::function<void(Closure)> Runner;
   void CheckInput(const string& tensor_name, TensorBuffer* tensor_buf, bool* flag, bool before) override;
+  void CheckInput(const string& tensor_name,
+                  TensorBuffer* tensor_buf,
+                  gpu::Event** e,
+                  bool before,
+                  Runner runner) override;
 
  private:
 
-  enum SwapStatus {
-    IN,
-    OUT,
-    SWAPPING_IN,
-    SWAPPING_OUT
+  // store the tensor's swapping status
+  struct SwapStatus {
+    bool in;      
+    bool out;
+    bool swap_out;
+    bool swap_in;
+
+    bool wait_out;
+    bool wait_in;
+
+    void set_swapout() {
+      in = false;
+      swap_out = true;
+    }
+
+    void set_out() {
+      swap_out = false;
+      out = true;
+    }
+
+    void set_swapin() {
+      swap_in = true;
+    }
+
+    void set_in() {
+      out = false;
+      swap_in = false;
+      in = true;
+    }
+
+    void unset_swapout() {
+      in = true;
+      swap_out = false;
+    }
+
+    void unset_swapin() {
+      swap_in = false;
+    }
+
+    void set_waitout() { wait_out = true; }
+    void set_waitin() { wait_in = true; }
+
+    bool is_swapout() { return (!in&&swap_out); }
+    bool is_out() { return out; }
+    bool is_swapin() { return swap_in; }
+    bool is_in() { return in; }
+    bool is_waitout() { return wait_out; }
+    bool is_waitin() { return wait_in; }
   };
+
+  // enum SwapStatus {
+  //   IN,
+  //   OUT,
+  //   SWAPPING_IN,
+  //   SWAPPING_OUT
+  // };
 
 
   inline void MergeChunks(BFCAllocator::ChunkHandle h1, BFCAllocator::ChunkHandle h2) {
@@ -181,15 +238,22 @@ class GPUBFCAllocator : public BFCAllocator {
     std::pair<void*, int64> swapped_gpu_buffer; // set if buffer swapped out
     void* in_gpu_src;
     condition_variable_and_mutex cv_mu;
-    volatile int data_ready; // false if buffer swapped out
+    // volatile int data_ready; // false if buffer swapped out
+    SwapStatus data_ready;
+    bool need_dealloc;
     // for two usage:
     // 1. when swap out a tensor, need to deallocate it after enqueuing computation (do once)
     // 2. when swap out a tensor, need to waitfor d2h stream after enqueuing cmoputation (do once)
     // bool need_deallocate;
     // when meeting swap-in tensor, need to make comp.stream wait for h2d stream (do once)
+    gpu::Event* out_e;    // only init once
+    gpu::Event* in_e;     // only init once
+    // bool need_wait_out;
+    // bool need_wait_in;
+    bool valid = true;
     bool need_in_addr;
-    bool can_deallocate_after_swap_out;
-    bool then_deallocate;
+    // bool can_deallocate_after_swap_out;
+    // bool then_deallocate;
     float out_fraction;
   };
 
