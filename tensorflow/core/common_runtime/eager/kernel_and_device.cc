@@ -41,8 +41,8 @@ std::string GetEnv(const std::string& env_name) {
 
 const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
 const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
-const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
-const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
+//const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
+//const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
 
 static std::fstream tensor_access_fout;
 static std::fstream fout_in(innodes_file.c_str(), fout_in.out);

@@ -1547,7 +1547,7 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   for (auto node : recompute_nodes) {
     recompute_node_names.push_back(node->name());
   }
-  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_node_names);
+  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(target_tensor, recompute_node_names);
 
   // TODO: handle
   for (auto& tn : feed_tagged_nodes) {

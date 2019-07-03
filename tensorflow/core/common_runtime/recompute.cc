@@ -50,10 +50,12 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
   }
 }
 
-void RecomputeHelper::SetRecomputing(const std::vector<std::string>& recompute_nodes) {
+void RecomputeHelper::SetRecomputing(const std::string& target_tensor, const std::vector<std::string>& recompute_nodes) {
   int cnt = 0;
+  auto& recompute_tensors = recompute_tensors_[target_tensor];
   for (auto& node_name : recompute_nodes) {
     for (auto& tensor_name : node_to_tensors_[node_name]) {
+      if (!recompute_tensors.count(tensor_name)) continue;
       auto& params = tensor_recompute_params_[tensor_name];
       auto& cv_mu = params.cv_mu;
       std::lock_guard<std::mutex> l(*(cv_mu.second));
@@ -70,9 +72,9 @@ void RecomputeHelper::SetRecomputing(const std::vector<std::string>& recompute_n
 }
 
 void RecomputeHelper::SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed) {
-  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first))
+  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first) || !recompute_tensors_[target].count(recomputed.first))
     return;
-  recomputed_tensors_[target][recomputed.first] = *(recomputed.second);
+  saved_tensors_[target][recomputed.first] = *(recomputed.second);
   if (is_ref) {
     LOG(FATAL) << "entry is a reference, handle it now.";
   }
@@ -105,7 +107,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
 
 void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
   std::lock_guard<std::mutex> l(mu_);
-  auto& tensors = recomputed_tensors_[target];
+  auto& tensors = saved_tensors_[target];
   for (auto& t : tensors) {
     auto& params = tensor_recompute_params_[t.first];
     auto& cv_mu = params.cv_mu;
@@ -205,7 +207,7 @@ void RecomputeHelper::LoadRecomputePolicy() {
     return;
   }
   std::string target_tensor, trigger_tensor, feed_tensor, line;
-  int del_cnt, total1, compute_cnt, total2;
+  int del_cnt, total1, compute_cnt, total2, num_recomp_tensors;
   while(std::getline(fin, line)) {
     if (line.empty() || line[0] == '#') continue;
     std::istringstream iss(line);
@@ -213,9 +215,19 @@ void RecomputeHelper::LoadRecomputePolicy() {
     auto& params = tensor_recompute_params_[target_tensor];
     params.target_tensor = target_tensor;
     params.cv_mu = std::make_pair(std::make_shared<std::condition_variable>(), std::make_shared<std::mutex>());
+
+    recompute_tensors_[target_tensor].insert(target_tensor);
+    iss >> num_recomp_tensors;
+    string tname;
+    while(num_recomp_tensors--) {
+      iss >> tname;
+      recompute_tensors_[target_tensor].insert(tname);
+    }
+
     while(iss >> feed_tensor) {
       params.feed_tensors.push_back(feed_tensor);
     }
+
     params.data_ready = DataStatus::OUT;
     params.buf = nullptr;
     params.using_count = 0;
