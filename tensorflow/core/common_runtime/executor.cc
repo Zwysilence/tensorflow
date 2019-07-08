@@ -1469,6 +1469,8 @@ class ExecutorState {
   void ParseTensorName(const std::string& tensor_name, std::string* node_name, int* slot);
 
   Node* FindNodeName(const std::string& tensor_name);
+
+  void SetTensors(const NodeItem& item, EntryVector* outputs);
 };
 
 // The format of tensor is "node_id:output_slot", target_tensor is in the "iter"-th iteration of "frame"
@@ -1637,31 +1639,35 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
     const int64 iter = tagged_node.input_iter;
     for (const Edge* e : input_edges) {
       const Node* in_node = e->src();
-      if (feed_nodes.count(in_node) && feed_seen.insert(in_node).second) {
-        if (IsEnter(in_node)) {
-          feed_tagged_nodes->emplace_back(in_node, frame->parent_frame, frame->parent_iter, false);
-        } else if (IsExit(in_node)) {
-          LOG(FATAL) << "Not handle exit node yet.";
-          return;
-        } else if (IsNextIteration(in_node)) {
-          feed_tagged_nodes->emplace_back(in_node, frame, iter-1, false);
-        } else {
-          feed_tagged_nodes->emplace_back(in_node, frame, iter, false);
+      const int src_output = e->src_output();
+      if (const_cast<Node*>(in_node)->TensorInMemory(in_node->name()+":"+std::to_string(src_output))) {
+        if (feed_seen.insert(in_node).second) {
+          if (IsEnter(in_node)) {
+            feed_tagged_nodes->emplace_back(in_node, frame->parent_frame, frame->parent_iter, false);
+          } else if (IsExit(in_node)) {
+            LOG(FATAL) << "Not handle exit node yet.";
+            return;
+          } else if (IsNextIteration(in_node)) {
+            feed_tagged_nodes->emplace_back(in_node, frame, iter-1, false);
+          } else {
+            feed_tagged_nodes->emplace_back(in_node, frame, iter, false);
+          }
         }
-      }
-      if (!feed_nodes.count(in_node) && visited->insert(in_node).second) {
-        if (IsEnter(in_node)) {
-          tagged_nodes->emplace_back(in_node, frame->parent_frame, frame->parent_iter, false);
-          queue.push_back(tagged_nodes->back());
-        } else if (IsExit(in_node)) {
-          LOG(FATAL) << "Not handle exit node yet.";
-          return;
-        } else if (IsNextIteration(in_node)) {
-          tagged_nodes->emplace_back(in_node, frame, iter-1, false);
-          queue.push_back(tagged_nodes->back());
-        } else {
-          tagged_nodes->emplace_back(in_node, frame, iter, false);
-          queue.push_back(tagged_nodes->back());
+      } else {
+        if (visited->insert(in_node).second) {
+          if (IsEnter(in_node)) {
+            tagged_nodes->emplace_back(in_node, frame->parent_frame, frame->parent_iter, false);
+            queue.push_back(tagged_nodes->back());
+          } else if (IsExit(in_node)) {
+            LOG(FATAL) << "Not handle exit node yet.";
+            return;
+          } else if (IsNextIteration(in_node)) {
+            tagged_nodes->emplace_back(in_node, frame, iter-1, false);
+            queue.push_back(tagged_nodes->back());
+          } else {
+            tagged_nodes->emplace_back(in_node, frame, iter, false);
+            queue.push_back(tagged_nodes->back());
+          }
         }
       }
     }
@@ -1855,24 +1861,43 @@ void ExecutorState::LogTensorValue(const NodeItem& item, EntryVector* outputs, c
   }
 }
 
+void ExecutorState::SetTensors(const NodeItem& item, EntryVector* outputs) {
+  const string& node_name = item.node->name();
+
+  std::vector<std::string> tensor_names;
+  tensor_names.reserve(outputs->size());
+  for (int i = 0; i < outputs->size(); ++i) {
+    Entry* entry = &((*outputs)[i]);
+    if (!entry->has_value) continue;
+
+    string tensor_name = node_name + ":" + std::to_string(i);
+    entry->tensor_name = tensor_name;
+    entry->readable_name = node_name + ":" + std::to_string(i);
+    if (entry->ref) {
+      entry->ref->SetName(tensor_name);
+      entry->ref->SetNode(const_cast<Node*>(item.node));
+    } else {
+      entry->val->SetName(tensor_name);
+      entry->val->SetNode(const_cast<Node*>(item.node));
+    }
+    tensor_names.push_back(tensor_name);
+  }
+
+  const_cast<Node*>(item.node)->SetTensorsInMemory(tensor_names);
+}
+
 void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
   // const string& id_str = std::to_string(item.node->id());
-  const string& node_name = item.node->name();
   Device* device = static_cast<Device*>(ctx->device());
   DeviceContext* dev_ctx = ctx->op_device_context();
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
 
-    // string tensor_name = id_str + ":" + std::to_string(i);
-    string tensor_name = node_name + ":" + std::to_string(i);
-    entry->tensor_name = tensor_name;
-    entry->readable_name = node_name + ":" + std::to_string(i);
-
     if (entry->ref) {
-      entry->ref->RecordSwapContext({tensor_name, device, dev_ctx});
+      entry->ref->RecordSwapContext({entry->tensor_name, device, dev_ctx});
     } else {
-      entry->val->RecordSwapContext({tensor_name, device, dev_ctx});
+      entry->val->RecordSwapContext({entry->tensor_name, device, dev_ctx});
     }
   }
 }
@@ -2263,6 +2288,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           nodestats::SetOpEnd(stats);
           EntryVector outputs;
           Status s = ProcessOutputs(*state->item, &state->ctx, &outputs, stats);
+          SetTensors(*state->item, &outputs);
           RecordSwapContexts(*state->item, &outputs, &state->ctx);
           MarkOutputsWithFrameAndIter(state->tagged_node, &outputs);
           SaveRecomputeTensors(state->tagged_node, &outputs);
@@ -2339,6 +2365,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
+        SetTensors(item, &outputs);
         // record the tensor's related contexts, it's useful when conducting the mm related operations
         RecordSwapContexts(item, &outputs, &ctx);
         // LogTensorValue(item, &outputs, step_id_, true);

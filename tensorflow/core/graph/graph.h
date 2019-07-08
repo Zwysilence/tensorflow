@@ -40,6 +40,7 @@ limitations under the License.
 #include <functional>
 #include <string>
 #include <vector>
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/types.h"
@@ -66,7 +67,7 @@ class NeighborIter;    // Declared below
 class NodeIter;        // Declared below
 class NodeProperties;  // Defined in .cc
 
-class Node {
+class Node : public NodeInterface {
  public:
   string DebugString() const;
   int id() const { return id_; }
@@ -193,6 +194,23 @@ class Node {
     while_ctx_ = while_ctx;
   }
 
+  bool TensorInMemory(const std::string& tname) {
+    std::lock_guard<std::mutex> l(mu_);
+    return tensor_in_memory_[tname];
+  }
+
+  void SetTensorInMemory(const std::string& tname, bool in) {
+    std::lock_guard<std::mutex> l(mu_);
+    tensor_in_memory_[tname] = in;
+  }
+
+  void SetTensorsInMemory(const std::vector<std::string>& tnames) {
+    std::lock_guard<std::mutex> l(mu_);
+    for (auto& name : tnames) {
+      tensor_in_memory_[name] = true;
+    }
+  }
+
  private:
   friend class Graph;
   Node();
@@ -273,6 +291,12 @@ class Node {
   // graph. Exit nodes that are part of while loop gradient graphs will not have
   // this set.)
   WhileContext* while_ctx_;
+
+  // for recomputation checking
+  std::unordered_map<string, bool> tensor_in_memory_;
+  
+  // protect tensor_in_memory_
+  std::mutex mu_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Node);
 };
