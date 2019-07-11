@@ -881,6 +881,7 @@ class ExecutorState {
           device_context(other.device_context),
           tensor_name(other.tensor_name),
           readable_name(other.readable_name),
+          node(other.node),
           frame(other.frame),
           iter(other.iter) {
       if (val_field_is_set) {
@@ -903,6 +904,7 @@ class ExecutorState {
       device_context = other.device_context;
       tensor_name = other.tensor_name;
       readable_name = other.readable_name;
+      node = other.node;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -923,6 +925,7 @@ class ExecutorState {
       device_context = other.device_context;
       tensor_name = other.tensor_name;
       readable_name = other.readable_name;
+      node = other.node;
       frame = other.frame;
       iter = other.iter;
       if (val_field_is_set) {
@@ -969,6 +972,8 @@ class ExecutorState {
 
     FrameState* frame = nullptr;
 
+    Node* node;
+
     int64 iter = -1;
 
   };
@@ -989,7 +994,11 @@ class ExecutorState {
           outstanding_ops(0),
           outstanding_frame_count(0),
           counts_(*pending_counts) {  // Initialize with copy of *pending_counts
+          total_inputs = total_input_tensors;
     }
+
+    // for debug
+    int total_inputs;
 
     // The state of an iteration.
 
@@ -1458,6 +1467,7 @@ class ExecutorState {
 
   void ReverseBFS(const std::unordered_set<const Node*>& feed_nodes, 
                                std::vector<TaggedNode>* feed_tagged_nodes,
+                               std::vector<std::string>* feed_tensors,
                                std::unordered_set<const Node*>* visited, 
                                std::vector<TaggedNode>* tagged_nodes,
                                TaggedNodeSeq* ready);
@@ -1474,15 +1484,11 @@ class ExecutorState {
 };
 
 // The format of tensor is "node_id:output_slot", target_tensor is in the "iter"-th iteration of "frame"
-void ExecutorState::Recompute(const std::string& target_tensor, FrameState* frame, const int64 iter, const std::vector<std::string>& feed_tensors, std::function<void()> done) {
+void ExecutorState::Recompute(const std::string& target_tensor, FrameState* frame, const int64 iter, const std::vector<std::string>& unused, std::function<void()> done) {
   std::unique_lock<std::mutex> l(recompute_mu_);
   volatile bool* pflag = &recomputing_;
   cv_.wait(l, [pflag] { return !(*pflag); });
   recomputing_ = true;
-  std::unordered_set<const Node*> feed_nodes;
-  std::unordered_map<const Node*, std::unordered_set<int>> node_to_slot;
-  FindNodes(feed_tensors, &feed_nodes);
-  ParseTensorNames(feed_tensors, &node_to_slot);
   string target_node_name;
   int target_slot;
   ParseTensorName(target_tensor, &target_node_name, &target_slot);
@@ -1493,7 +1499,11 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   recompute_nodes.insert(target_node);
   recompute_tagged_nodes.emplace_back(target_node, frame, iter, false);
   TaggedNodeSeq ready;
-  ReverseBFS(feed_nodes, &feed_tagged_nodes, &recompute_nodes, &recompute_tagged_nodes, &ready);
+  std::vector<std::string> feed_tensors;
+  std::unordered_set<const Node*> feed_nodes;
+  ReverseBFS(feed_nodes, &feed_tagged_nodes, &feed_tensors, &recompute_nodes, &recompute_tagged_nodes, &ready);
+  std::unordered_map<const Node*, std::unordered_set<int>> node_to_slot;
+  ParseTensorNames(feed_tensors, &node_to_slot);
   /*
   std::cout << "Target node : " << target_node->name() << "\n\n";
   std::cout << "Out nodes of target node: ";
@@ -1620,6 +1630,7 @@ Node* ExecutorState::FindNodeName(const std::string& name) {
 
 void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes, 
                                std::vector<TaggedNode>* feed_tagged_nodes,
+                               std::vector<std::string>* feed_tensors,
                                std::unordered_set<const Node*>* visited, 
                                std::vector<TaggedNode>* tagged_nodes,
                                TaggedNodeSeq* ready) {
@@ -1640,7 +1651,9 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
     for (const Edge* e : input_edges) {
       const Node* in_node = e->src();
       const int src_output = e->src_output();
-      if (const_cast<Node*>(in_node)->TensorInMemory(in_node->name()+":"+std::to_string(src_output))) {
+      string tensor_name = in_node->name()+":"+std::to_string(src_output);
+      if (const_cast<Node*>(in_node)->RefCountOfTensor(tensor_name) > 0 && const_cast<Node*>(in_node)->TensorDeleted(tensor_name) == false) {
+      //if (const_cast<Node*>(in_node)->RefCountOfTensor(tensor_name)) {
         if (feed_seen.insert(in_node).second) {
           if (IsEnter(in_node)) {
             feed_tagged_nodes->emplace_back(in_node, frame->parent_frame, frame->parent_iter, false);
@@ -1653,6 +1666,7 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
             feed_tagged_nodes->emplace_back(in_node, frame, iter, false);
           }
         }
+        feed_tensors->push_back(tensor_name);
       } else {
         if (visited->insert(in_node).second) {
           if (IsEnter(in_node)) {
@@ -1864,8 +1878,6 @@ void ExecutorState::LogTensorValue(const NodeItem& item, EntryVector* outputs, c
 void ExecutorState::SetTensors(const NodeItem& item, EntryVector* outputs) {
   const string& node_name = item.node->name();
 
-  std::vector<std::string> tensor_names;
-  tensor_names.reserve(outputs->size());
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
@@ -1873,17 +1885,13 @@ void ExecutorState::SetTensors(const NodeItem& item, EntryVector* outputs) {
     string tensor_name = node_name + ":" + std::to_string(i);
     entry->tensor_name = tensor_name;
     entry->readable_name = node_name + ":" + std::to_string(i);
+    entry->node = const_cast<Node*>(item.node);
     if (entry->ref) {
       entry->ref->SetName(tensor_name);
-      entry->ref->SetNode(const_cast<Node*>(item.node));
     } else {
       entry->val->SetName(tensor_name);
-      entry->val->SetNode(const_cast<Node*>(item.node));
     }
-    tensor_names.push_back(tensor_name);
   }
-
-  const_cast<Node*>(item.node)->SetTensorsInMemory(tensor_names);
 }
 
 void ExecutorState::RecordSwapContexts(const NodeItem& item, EntryVector* outputs, OpKernelContext* ctx) {
@@ -1912,7 +1920,7 @@ void ExecutorState::MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, E
     if (!entry->has_value) continue;
     entry->frame = frame;
     entry->iter = iter;
-    recompute_helper->RecordTensorBuffer(entry->tensor_name, entry->ref ? entry->ref : entry->val.get());
+    recompute_helper->RecordTensorInfo(entry->tensor_name, entry->ref ? entry->ref : entry->val.get(), const_cast<Node*>(tagged_node.node));
     recompute_helper->RecordRecomputeCall(entry->tensor_name, [this, frame, iter](const std::string& target_tensor, 
                                                                                   const std::vector<std::string>& feed_tensors, 
                                                                                   std::function<void()> done) {
@@ -2257,6 +2265,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
+          if (tagged_node.recompute_handle == -1) {
+            (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
+          }
         }
         MaybeMarkCompleted(input_frame, input_iter, id);
         // Continue to process the nodes in 'inline_ready'.
@@ -2308,6 +2319,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
           for (int i = 0; i < num_inputs; ++i) {
             (first_input + i)->ClearVal();
+            if (state->tagged_node.recompute_handle == -1) {
+              (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
+            }
           }
           FrameState* input_frame = state->tagged_node.input_frame;
           const int64 input_iter = state->tagged_node.input_iter;
@@ -2396,6 +2410,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
+        if (tagged_node.recompute_handle == -1) {
+          (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
+        }
       }
       MaybeMarkCompleted(input_frame, input_iter, id);
       // Propagates outputs.
@@ -3337,6 +3354,9 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
         input_tensors[dst_loc] = std::move((*outputs)[src_slot]);
       } else {
         input_tensors[dst_loc] = (*outputs)[src_slot];
+      }
+      if (rh == -1) {
+        const_cast<Node*>(item->node)->RefTensor(input_tensors[dst_loc].tensor_name);
       }
     }
 

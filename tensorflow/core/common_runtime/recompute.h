@@ -14,6 +14,7 @@ namespace tensorflow {
 
 class TensorBuffer;
 class Tensor;
+class Node;
 class RecomputeHelper {
   ~RecomputeHelper() = default;
   RecomputeHelper(const RecomputeHelper&) = delete;
@@ -32,7 +33,7 @@ class RecomputeHelper {
     readable_names_[tensor_name] = readable_name;
     RecordTensorAccess(tensor_name, time_);
   }
-  void RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor);
+  void RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node);
   void RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call);
   void RecomputeTensor(const std::string& tensor_name);
   void LoadRecomputePolicy();
@@ -58,6 +59,7 @@ class RecomputeHelper {
     TensorBuffer* buf;
     volatile int using_count;
     bool then_delete;
+    Node* node;
   };
 
   struct TriggerInfo {

@@ -51,7 +51,6 @@ limitations under the License.
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/tensor_coding.h"
 #include "tensorflow/core/platform/types.h"
-//#include "tensorflow/core/graph/graph.h"
 
 #include <cuda_runtime.h>
 
@@ -687,12 +686,7 @@ void Tensor::CheckIsAlignedAndSingleElement() const {
   CHECK_EQ(1, NumElements()) << "Must have a one element tensor";
 }
 
-Tensor::~Tensor() { 
-  if (buf_ && buf_->RefCountIsOne()) {
-    node_->SetTensorInMemory(name_, false);
-  }
-  UnrefIfNonNull(buf_); 
-}
+Tensor::~Tensor() { UnrefIfNonNull(buf_); }
 
 void Tensor::RecordTensorAccess(const string& tensor_name, uint64 time_) {
   if (buf_ == nullptr) return;

@@ -6,6 +6,7 @@
 
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/graph/graph.h"
 
 // #define _DEBUG
 
@@ -127,10 +128,11 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
   tensors.clear();
 }
 
-void RecomputeHelper::RecordTensorBuffer(const std::string& tensor_name, Tensor* tensor) {
+void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
   tensor_recompute_params_[tensor_name].buf = tensor->buffer();
   tensor_recompute_params_[tensor_name].data_ready = DataStatus::IN;
+  tensor_recompute_params_[tensor_name].node = node;
 }
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
@@ -175,6 +177,7 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
+  params.node->SetDeleteTensor(tensor_name);
   // LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
   TensorBuffer* buf = params.buf;
   Allocator* alloc = buf->GetAllocator();

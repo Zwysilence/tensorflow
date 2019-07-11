@@ -67,7 +67,7 @@ class NeighborIter;    // Declared below
 class NodeIter;        // Declared below
 class NodeProperties;  // Defined in .cc
 
-class Node : public NodeInterface {
+class Node {
  public:
   string DebugString() const;
   int id() const { return id_; }
@@ -194,21 +194,29 @@ class Node : public NodeInterface {
     while_ctx_ = while_ctx;
   }
 
-  bool TensorInMemory(const std::string& tname) {
+  void SetDeleteTensor(const std::string& tname) {
     std::lock_guard<std::mutex> l(mu_);
-    return tensor_in_memory_[tname];
+    tensor_deleted_[tname] = true;
   }
 
-  void SetTensorInMemory(const std::string& tname, bool in) {
+  bool TensorDeleted(const std::string& tname) {
     std::lock_guard<std::mutex> l(mu_);
-    tensor_in_memory_[tname] = in;
+    return tensor_deleted_[tname];
   }
 
-  void SetTensorsInMemory(const std::vector<std::string>& tnames) {
+  void RefTensor(const std::string& tname) {
     std::lock_guard<std::mutex> l(mu_);
-    for (auto& name : tnames) {
-      tensor_in_memory_[name] = true;
-    }
+    ref_counts_[tname]++;
+  }
+
+  void UnrefTensor(const std::string& tname) {
+    std::lock_guard<std::mutex> l(mu_);
+    ref_counts_[tname]--;
+  }
+
+  int RefCountOfTensor(const std::string& tname) {
+    std::lock_guard<std::mutex> l(mu_);
+    return ref_counts_[tname];
   }
 
  private:
@@ -293,9 +301,11 @@ class Node : public NodeInterface {
   WhileContext* while_ctx_;
 
   // for recomputation checking
-  std::unordered_map<string, bool> tensor_in_memory_;
+  std::unordered_map<string, int> ref_counts_;
+
+  std::unordered_map<string, bool> tensor_deleted_;
   
-  // protect tensor_in_memory_
+  // protect ref_counts_ 
   std::mutex mu_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Node);

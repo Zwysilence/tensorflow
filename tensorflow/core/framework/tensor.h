@@ -60,13 +60,6 @@ struct TensorParams
   /* data */
 };
 
-class NodeInterface {
-public:
-  bool TensorInMemory(const std::string& tname) { return false; }
-  void SetTensorInMemory(const std::string& tname, bool in) {}
-  void SetTensorsInMemory(const std::vector<std::string>& tnames) {}
-};
-
 /// @ingroup core
 /// Represents an n-dimensional array of values.
 class Tensor {
@@ -498,8 +491,6 @@ class Tensor {
 
   void SetName(const string& name) { name_ = name; }
 
-  void SetNode(NodeInterface* node) { node_ = node; }
-
   void* data();
 
   void set_data(void* dt);
@@ -526,7 +517,6 @@ class Tensor {
   TensorShape shape_;
   TensorBuffer* buf_;
   string name_;
-  NodeInterface* node_;
 
   friend class DMAHelper;
   friend class TensorCApi;
