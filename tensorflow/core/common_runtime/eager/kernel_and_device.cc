@@ -39,8 +39,8 @@ std::string GetEnv(const std::string& env_name) {
   return env;
 }
 
-const std::string innodes_file = "/home/frog/vfonel/tf_static_graph/1_innodes.txt";
-const std::string outnodes_file = "/home/frog/vfonel/tf_static_graph/1_outnodes.txt";
+const std::string innodes_file = "/mnt/maweiliang/tf_static_graph/1_innodes.txt";
+const std::string outnodes_file = "/mnt/maweiliang/tf_static_graph/1_outnodes.txt";
 // const std::string innodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_innodes.txt";
 // const std::string outnodes_file = "/vpublic01/frog/vfonel/tf_static_graph/1_outnodes.txt";
 
