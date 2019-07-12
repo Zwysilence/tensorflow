@@ -912,12 +912,14 @@ Status EagerExecute(EagerContext* ctx, Device* device,
 
   DecrementUsingCount(inputs);
 
-  for (int i = 0; i < outputs.size(); ++i) {
-    std::string tensor_name = op_uname + ":" + std::to_string(i);
-    outputs[i].SetName(tensor_name);
+  if (container != nullptr) {
+    for (int i = 0; i < outputs.size(); ++i) {
+      std::string tensor_name = op_uname + ":" + std::to_string(i);
+      outputs[i].SetName(tensor_name);
     // outputs[i].RecordSwapContext({tensor_name, nullptr, nullptr});
+    }
+    CollectOutputs(outputs);
   }
-  CollectOutputs(outputs);
 
   if (maybe_stats != nullptr) {
     int64 nanos = Env::Default()->NowNanos();

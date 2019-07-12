@@ -360,7 +360,7 @@ class ResNet50Benchmarks(tf.test.Benchmark):
               if i == _NUM_STEPS_TO_PROFILE:
                 run_metadata = context.context().export_run_metadata()
                 node_time_util.get_node_time(run_metadata)
-                context.context().disable_run_matadata()
+                context.context().disable_run_metadata()
           if execution_mode:
             tfe.async_wait()
           self._force_device_sync()
