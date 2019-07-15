@@ -1750,7 +1750,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     #ifdef _DEBUGV2
       LOG(INFO) << "error node num: " << gview.num_nodes_;
     #endif
-      if (abs(num_nodes_ - gview.num_nodes_) < 10) {
+      if (abs(num_nodes_ - gview.num_nodes_) < 10 || num_nodes_ > 7300) {
         num_nodes_ = gview.num_nodes_;
         LOG(INFO) << "TF_MODEL_NUM_NODES has been modified to " << num_nodes_;
       } else {
