@@ -972,7 +972,7 @@ class ExecutorState {
 
     FrameState* frame = nullptr;
 
-    Node* node;
+    Node* node = nullptr;
 
     int64 iter = -1;
 
@@ -2199,6 +2199,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
     const int64 input_iter = tagged_node.input_iter;
     const int id = node->id();
     const NodeItem& item = *gview.node(id);
+    int i = 0;
 
     // TODO(misard) Replace with a finer-grain enabling flag once we
     // add better optional debugging support.
@@ -2265,7 +2266,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
-          if (tagged_node.recompute_handle == -1) {
+          if (tagged_node.recompute_handle == -1 && (first_input+i)->node) { // why some entries's nodes are nullptr
             (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
           }
         }
@@ -2319,7 +2320,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           DecrementUsingCountOfTensors(state->tagged_node, first_input, num_inputs);
           for (int i = 0; i < num_inputs; ++i) {
             (first_input + i)->ClearVal();
-            if (state->tagged_node.recompute_handle == -1) {
+            if (state->tagged_node.recompute_handle == -1 && (first_input+i)->node) { // why some entries's nodes are nullptr
               (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
             }
           }
@@ -2410,7 +2411,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       DecrementUsingCountOfTensors(tagged_node, first_input, num_inputs);
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
-        if (tagged_node.recompute_handle == -1) {
+        if (tagged_node.recompute_handle == -1 && (first_input+i)->node) { // why some entries's nodes are nullptr
           (first_input + i)->node->UnrefTensor((first_input+i)->tensor_name);
         }
       }
