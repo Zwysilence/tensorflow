@@ -34,6 +34,7 @@ class RecomputeContextManager {
  public:
   struct RecomputeContext {
     const std::unordered_set<const Node*>* recompute_nodes;
+    std::unordered_set<const Node*> already_added;
     const Node* target_node;
     const int output_slot;
     const string target_tensor;
@@ -50,9 +51,9 @@ class RecomputeContextManager {
     return rcm;
   }
 
-  RecomputeContext GetRecomputeContext(RecomputeHandle h) {
+  RecomputeContext& GetRecomputeContext(RecomputeHandle h) {
     if (h == -1)
-      return RecomputeContext();
+      return empty_context_;
     DCHECK_LT(h, next_handle_);
     return contexts_[h];
   }

@@ -8,7 +8,7 @@
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/graph/graph.h"
 
-// #define _DEBUG
+#define _DEBUG
 
 namespace tensorflow {
 
