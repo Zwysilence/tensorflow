@@ -90,7 +90,7 @@ namespace {
 
 // 1-D, 0 element tensor.
 static const Tensor* const kEmptyTensor = new Tensor;
-std::unordered_map<string, int> node_names_map_;
+// std::unordered_map<string, int> node_names_map_;
 
 bool IsInitializationOp(const Node* node) {
   return node->op_def().allows_uninitialized_input();
@@ -1355,7 +1355,7 @@ class ExecutorState {
 
   volatile bool recomputing_ = false;
 
-  //std::unordered_map<string, int> node_names_map_;
+  std::unordered_map<string, int> node_names_map_;
 
   // Mapping from frame name to outstanding frames. A new frame is created
   // at some iteration of an active frame. So the unique key for the new
@@ -1559,10 +1559,8 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   RemoveUnrelatedControlDependencies(recompute_nodes, recompute_tagged_nodes);
   std::vector<std::string> recompute_node_names;
   recompute_node_names.reserve(recompute_nodes.size());
-  LOG(INFO) << "Recompute Nodes";
   for (auto node : recompute_nodes) {
     recompute_node_names.push_back(node->name());
-    LOG(INFO) << node->name();
   }
   RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(target_tensor, recompute_node_names);
 
@@ -1628,9 +1626,6 @@ void ExecutorState::FindNodes(const std::vector<std::string>& tensors, std::unor
 }
 
 Node* ExecutorState::FindNodeName(const std::string& name) {
-  if (name == "IteratorGetNext") {
-    LOG(INFO) << "FindNodeName " << name << " node_maps_map_ " << &node_names_map_;
-  }
   if (!node_names_map_.count(name)) return nullptr;
   const Graph* g = impl_->graph_.get();
   return g->FindNodeId(node_names_map_.at(name));
@@ -1662,27 +1657,30 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
       string node_name = tagged_node.node->name();
       pos = node_name.rfind('/');
       if (pos != std::string::npos) {
-        string src_name = node_name.substr(0, pos);
-        Node* src_node = FindNodeName(src_name);
-        LOG(INFO) << src_name << " " << src_node->name();
-        if (src_node) {
-          if (visited->insert(src_node).second) {
-            if (IsEnter(src_node)) {
-              tagged_nodes->emplace_back(src_node, frame->parent_frame, frame->parent_iter, false);
-              queue.push_back(tagged_nodes->back());
-            } else if (IsExit(src_node)) {
-              LOG(FATAL) << "Not handle exit node yet.";
-              return;
-            } else if (IsNextIteration(src_node)) {
-              tagged_nodes->emplace_back(src_node, frame, iter-1, false);
-              queue.push_back(tagged_nodes->back());
-            } else {
-              tagged_nodes->emplace_back(src_node, frame, iter, false);
-              queue.push_back(tagged_nodes->back());
+        std::vector<std::string> src_names = 
+                         { node_name.substr(0, pos), 
+                           node_name.substr(0, pos) + "/_" + std::to_string(stoi(node_name.substr(pos+2)) - 1) };
+        for (auto& src_name : src_names) {
+          Node* src_node = FindNodeName(src_name);
+          if (src_node) {
+            if (visited->insert(src_node).second) {
+              if (IsEnter(src_node)) {
+                tagged_nodes->emplace_back(src_node, frame->parent_frame, frame->parent_iter, false);
+                queue.push_back(tagged_nodes->back());
+              } else if (IsExit(src_node)) {
+                LOG(FATAL) << "Not handle exit node yet.";
+                return;
+              } else if (IsNextIteration(src_node)) {
+                tagged_nodes->emplace_back(src_node, frame, iter-1, false);
+                queue.push_back(tagged_nodes->back());
+              } else {
+                tagged_nodes->emplace_back(src_node, frame, iter, false);
+                queue.push_back(tagged_nodes->back());
+              }
             }
+          } else {
+            LOG(INFO) << src_name << " is not exist";
           }
-        } else {
-          LOG(INFO) << src_name << " is not exist";
         }
       } else {
         LOG(FATAL) << "Recv node name is not the same as we expected";
@@ -1945,9 +1943,6 @@ void ExecutorState::SetTensors(const NodeItem& item, EntryVector* outputs) {
     entry->tensor_name = tensor_name;
     entry->readable_name = node_name + ":" + std::to_string(i);
     entry->node = const_cast<Node*>(item.node);
-    if (tensor_name == "IteratorGetNext:1") {
-      LOG(INFO) << "SetTensors " << tensor_name << " node_id " << entry->node->id();
-    }
     if (entry->ref) {
       entry->ref->SetName(tensor_name);
     } else {
@@ -2043,9 +2038,6 @@ ExecutorState::ExecutorState(const Executor::Args& args, ExecutorImpl* impl)
   for (int i = 0; i < num_node_ids; ++i) {
     const Node* node = g->FindNodeId(i);
     if (!node) continue;
-    if (node->name() == "IteratorGetNext") {
-      LOG(INFO) << node->name() << " is here " << &node_names_map_;
-    }
     node_names_map_[node->name()] = i;
   }
 }
@@ -2264,9 +2256,6 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
     const int64 input_iter = tagged_node.input_iter;
     const int id = node->id();
     const NodeItem& item = *gview.node(id);
-    int i = 0;
-    if (tagged_node.recompute_handle != -1)
-      LOG(INFO) << "Compute " << tagged_node.node->name();
 
     // TODO(misard) Replace with a finer-grain enabling flag once we
     // add better optional debugging support.
@@ -2360,8 +2349,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
             new AsyncState(params, tagged_node, &item, first_input, stats);
 
         auto done = [this, state]() {
+#ifdef _DEBUG
           if (state->tagged_node.recompute_handle != -1)
             LOG(INFO) << "ComputeAsync " << state->tagged_node.node->name() << " done";
+#endif
           Device* device = impl_->params_.device;
           NodeExecStatsWrapper* stats = state->stats;  // Shorthand
           Entry* first_input = state->first_input;     // Shorthand
@@ -2400,6 +2391,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           TaggedNodeSeq ready;
           if (s.ok()) {
             PropagateOutputs(state->tagged_node, state->item, &outputs, &ready);
+          } else {
+            LOG(INFO) << "status is not ok";
           }
           outputs.clear();
 
@@ -2448,8 +2441,10 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         // for GPU kernel, it will return while the kernel has enqueued into the stream, but not kernel's finishing
         // And the postprocess are right even the computation did not finish
         device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
+#ifdef _DEBUG
         if (tagged_node.recompute_handle != -1)
           LOG(INFO) << "Compute " << tagged_node.node->name() << " done";
+#endif
         nodestats::SetOpEnd(stats);
         s = ProcessOutputs(item, &ctx, &outputs, stats);
         SetTensors(item, &outputs);
@@ -3317,11 +3312,6 @@ void ExecutorState::FrameState::ReActivateNodes(const Node* node, const int outp
     // Add dst to the ready queue if it's ready
     if (dst_ready) {
       if (dst_item->is_control_trigger) dst_dead = false;
-      if (dst_item->node->name() == "Mul_4/x"
-         || dst_item->node->name() == "bert/encoder/Reshape"
-         || dst_item->node->name() == "bert/encoder/ones") {
-        LOG(INFO) << dst_item->node->name() << " is reactivated by " << item->node->name();
-      }
       already_added.insert(dst_item->node);
       ready->push_back(TaggedNode(dst_item->node, this, iter, dst_dead, rh));
       iter_state->outstanding_ops++;
@@ -3439,12 +3429,6 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
     // Add dst to the ready queue if it's ready
     if (dst_ready) {
       if (dst_item->is_control_trigger) dst_dead = false;
-      if (dst_item->node->name() == "Mul_4/x"
-         || dst_item->node->name() == "IteratorGetNext/_2483"
-         || dst_item->node->name() == "bert/encoder/Reshape"
-         || dst_item->node->name() == "bert/encoder/ones") {
-        LOG(INFO) << dst_item->node->name() << "(" << dst_item->node << ") is activated by " << item->node->name();
-      }
       if (rh != -1)
         recompute_ctx.already_added.insert(dst_item->node);
       

@@ -155,10 +155,6 @@ class LocalRendezvousImpl : public Rendezvous {
     uint64 key_hash = KeyHash(key.FullKey());
     VLOG(2) << "Send " << this << " " << key_hash << " " << key.FullKey();
 
-    if (key.FullKey() == "/job:localhost/replica:0/task:0/device:CPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_830_IteratorGetNext;0:0") {
-      LOG(INFO) << "Send " << key.FullKey() << ", Tensor " << val.Name();
-    }
-
     mu_.lock();
     if (!status_.ok()) {
       // Rendezvous has been aborted.
@@ -223,7 +219,6 @@ class LocalRendezvousImpl : public Rendezvous {
       }
       queue->push_back(item);
       mu_.unlock();
-      LOG(INFO) << key.FullKey();
       return;
     }
 
