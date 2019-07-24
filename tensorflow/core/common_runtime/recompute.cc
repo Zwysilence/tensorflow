@@ -106,7 +106,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
-  std::lock_guard<std::mutex> l(mu_);
+  //std::lock_guard<std::mutex> l(mu_);
   auto& tensors = saved_tensors_[target];
   for (auto& t : tensors) {
     auto& params = tensor_recompute_params_[t.first];
@@ -119,6 +119,7 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
       params.buf->set_data(t.second.data());
       t.second.set_data(nullptr);
       params.data_ready = DataStatus::IN;
+      params.node->SetTensorDeleted(t.first, false);
       cv_mu.first->notify_all();
     #ifdef _DEBUG
       LOG(INFO) << "Recompute " << t.first << " done. buffer=" << params.buf;
@@ -183,10 +184,10 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
-  params.node->SetDeleteTensor(tensor_name);
   // LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
+  params.node->SetTensorDeleted(tensor_name, true);
   TensorBuffer* buf = params.buf;
   Allocator* alloc = buf->GetAllocator();
   if (params.using_count == 0) {
