@@ -154,6 +154,7 @@ class LocalRendezvousImpl : public Rendezvous {
               const bool is_dead) override {
     uint64 key_hash = KeyHash(key.FullKey());
     VLOG(2) << "Send " << this << " " << key_hash << " " << key.FullKey();
+    //LOG(INFO) << "Send " << this << " " << key_hash << " " << key.FullKey() << " " << val.Name();
 
     mu_.lock();
     if (!status_.ok()) {
@@ -161,6 +162,16 @@ class LocalRendezvousImpl : public Rendezvous {
       Status s = status_;
       mu_.unlock();
       return s;
+    }
+
+    if (specific_keys_.count(string(key.FullKey()))) {
+      auto& item = key_item_map_[key_hash];
+      item.value = val;
+      item.is_dead = is_dead;
+      item.send_args = send_args;
+      if (item.send_args.device_context) {
+        item.send_args.device_context->Ref();
+      }
     }
 
     ItemQueue* queue = &table_[key_hash];
@@ -209,6 +220,13 @@ class LocalRendezvousImpl : public Rendezvous {
 
     ItemQueue* queue = &table_[key_hash];
     if (queue->empty() || !queue->front()->IsSendValue()) {
+      if (specific_keys_.count(string(key.FullKey())) && key_item_map_.count(key_hash)) {
+        mu_.unlock();
+        auto& item = key_item_map_[key_hash];
+        done(Status::OK(), item.send_args, recv_args, item.value, item.is_dead);
+        return;
+      }
+      LOG(INFO) << "Recv " << this << " " << key_hash << " " << key.FullKey();
       // There is no message to pick up.
       // Only recv-related fields need to be filled.
       Item* item = new Item;
@@ -294,6 +312,16 @@ class LocalRendezvousImpl : public Rendezvous {
   mutex mu_;
   Table table_ GUARDED_BY(mu_);
   Status status_ GUARDED_BY(mu_);
+  std::unordered_map<uint64, Item> key_item_map_;
+  std::unordered_set<std::string> specific_keys_{
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1711_bert/encoder/Reshape;0:0",
+    "/job:localhost/replica:0/task:0/device:CPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_830_IteratorGetNext;0:0",
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1781_bert/embeddings/Reshape;0:0",
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1720_bert/embeddings/Reshape_2;0:0",
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1780_bert/embeddings/Reshape;0:0",
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1719_bert/embeddings/Reshape_2;0:0",
+    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1790_Reshape_1;0:0"
+  };
 
   ~LocalRendezvousImpl() override {
     if (!table_.empty()) {

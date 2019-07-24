@@ -1652,6 +1652,7 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
     FrameState* frame = tagged_node.input_frame;
     const int64 iter = tagged_node.input_iter;
 
+    /*
     if (input_edges.empty() && tagged_node.node->IsRecv()) {
       int pos;
       string node_name = tagged_node.node->name();
@@ -1705,6 +1706,7 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
       }
       continue;
     }
+    */
     if (input_edges.empty()) ready->push_back(tagged_node);
     for (const Edge* e : input_edges) {
       const Node* in_node = e->src();
