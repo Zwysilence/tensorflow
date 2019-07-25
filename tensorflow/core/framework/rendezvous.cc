@@ -19,6 +19,7 @@ limitations under the License.
 #include <functional>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
@@ -32,6 +33,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+
+static const std::string recv_keys_file = "/tmp/recv_keys.txt";
 
 Rendezvous::ParsedKey& Rendezvous::ParsedKey::operator=(const ParsedKey& b) {
   const char* b_base = b.buf_.data();
@@ -148,7 +151,16 @@ Status Rendezvous::Recv(const ParsedKey& key, const Args& args, Tensor* val,
 
 class LocalRendezvousImpl : public Rendezvous {
  public:
-  explicit LocalRendezvousImpl() {}
+  explicit LocalRendezvousImpl() {
+    std::fstream fin(recv_keys_file);
+    if (fin.is_open()) {
+      std::string key;
+      while(fin >> key) {
+        recv_keys_.insert(key);
+      }
+      fin.close();
+    }
+  }
 
   Status Send(const ParsedKey& key, const Args& send_args, const Tensor& val,
               const bool is_dead) override {
@@ -164,7 +176,7 @@ class LocalRendezvousImpl : public Rendezvous {
       return s;
     }
 
-    if (specific_keys_.count(string(key.FullKey()))) {
+    if (recv_keys_.count(string(key.FullKey()))) {
       auto& item = key_item_map_[key_hash];
       item.value = val;
       item.is_dead = is_dead;
@@ -220,7 +232,7 @@ class LocalRendezvousImpl : public Rendezvous {
 
     ItemQueue* queue = &table_[key_hash];
     if (queue->empty() || !queue->front()->IsSendValue()) {
-      if (specific_keys_.count(string(key.FullKey())) && key_item_map_.count(key_hash)) {
+      if (recv_keys_.count(string(key.FullKey())) && key_item_map_.count(key_hash)) {
         mu_.unlock();
         auto& item = key_item_map_[key_hash];
         done(Status::OK(), item.send_args, recv_args, item.value, item.is_dead);
@@ -313,15 +325,7 @@ class LocalRendezvousImpl : public Rendezvous {
   Table table_ GUARDED_BY(mu_);
   Status status_ GUARDED_BY(mu_);
   std::unordered_map<uint64, Item> key_item_map_;
-  std::unordered_set<std::string> specific_keys_{
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1711_bert/encoder/Reshape;0:0",
-    "/job:localhost/replica:0/task:0/device:CPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_830_IteratorGetNext;0:0",
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1781_bert/embeddings/Reshape;0:0",
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1720_bert/embeddings/Reshape_2;0:0",
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1780_bert/embeddings/Reshape;0:0",
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1719_bert/embeddings/Reshape_2;0:0",
-    "/job:localhost/replica:0/task:0/device:GPU:0;0000000000000001;/job:localhost/replica:0/task:0/device:GPU:0;edge_1790_Reshape_1;0:0"
-  };
+  std::unordered_set<std::string> recv_keys_;
 
   ~LocalRendezvousImpl() override {
     if (!table_.empty()) {
