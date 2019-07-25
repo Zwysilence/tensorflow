@@ -1547,7 +1547,7 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   for (auto node : recompute_nodes) {
     recompute_node_names.push_back(node->name());
   }
-  RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_node_names);
+  // RecomputeHelper::GlobalRecomputeHelper()->SetRecomputing(recompute_node_names);
 
   // TODO: handle
   for (auto& tn : feed_tagged_nodes) {
@@ -1670,22 +1670,22 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
 
 void ExecutorState::IncrementUsingCountOfTensors(const TaggedNode& tagged_node, const TensorValueVec* inputs) {
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  //RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   for(auto &tensor_val : *inputs) {
     auto tensor = tensor_val.tensor;
     if (tensor == nullptr) continue;
     // tensor->IncrementUsingCount();  // no need for swapping
-    recompute_helper->IncrementUsingCount(tensor_val.name);
+    //recompute_helper->IncrementUsingCount(tensor_val.name);
   }
 }
 
 void ExecutorState::DecrementUsingCountOfTensors(const TaggedNode& tagged_node, const Entry* first_input, int num_inputs) {
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  // RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   for (int i = 0; i < num_inputs; ++i) {
     const Entry* entry = first_input + i;
     if (entry->val_field_is_set || entry->ref) {
-      recompute_helper->DecrementUsingCount(entry->tensor_name);
+      // recompute_helper->DecrementUsingCount(entry->tensor_name);
     }
   }
 }
@@ -1703,7 +1703,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
   if (log_tensor_access)
     static std::fstream tensor_access_fout("/tmp/tensor_access.txt", tensor_access_fout.out); */
 
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  // RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   // int i = -1;
   const GraphView& gview = impl_->gview_;
 
@@ -1809,7 +1809,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     const NodeItem& item = *gview.node(node->id());
     if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
 
-    recompute_helper->RecordTensorAccess(tensor_val.name, tensor_val.readable_name, time_);
+    // recompute_helper->RecordTensorAccess(tensor_val.name, tensor_val.readable_name, time_);
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -1881,24 +1881,25 @@ void ExecutorState::MarkOutputsWithFrameAndIter(const TaggedNode& tagged_node, E
   if (tagged_node.recompute_handle != -1) return; // skip recompute node
   FrameState* frame = tagged_node.input_frame;
   int64 iter = tagged_node.input_iter;
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  // RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
     if (!entry->has_value) continue;
     entry->frame = frame;
     entry->iter = iter;
-    recompute_helper->RecordTensorBuffer(entry->tensor_name, entry->ref ? entry->ref : entry->val.get());
-    recompute_helper->RecordRecomputeCall(entry->tensor_name, [this, frame, iter](const std::string& target_tensor, 
-                                                                                  const std::vector<std::string>& feed_tensors, 
-                                                                                  std::function<void()> done) {
-                                                                                    Recompute(target_tensor, frame, iter, feed_tensors, done);
-                                                                                  });
+
+    // recompute_helper->RecordTensorBuffer(entry->tensor_name, entry->ref ? entry->ref : entry->val.get());
+    // recompute_helper->RecordRecomputeCall(entry->tensor_name, [this, frame, iter](const std::string& target_tensor, 
+    //                                                                               const std::vector<std::string>& feed_tensors, 
+    //                                                                               std::function<void()> done) {
+    //                                                                                 Recompute(target_tensor, frame, iter, feed_tensors, done);
+    //                                                                               });
   }
 }
 
 void ExecutorState::SaveRecomputeTensors(const TaggedNode& tagged_node, EntryVector* outputs) {
   if (tagged_node.recompute_handle == -1) return;
-  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  // RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
   const string& target = RecomputeContextManager::GlobalRecomputeContextManager()->GetRecomputeContext(tagged_node.recompute_handle).target_tensor;
   for (int i = 0; i < outputs->size(); ++i) {
     Entry* entry = &((*outputs)[i]);
@@ -1907,7 +1908,7 @@ void ExecutorState::SaveRecomputeTensors(const TaggedNode& tagged_node, EntryVec
     //{
     //  LOG(FATAL) << "Entry is a reference, handle it please.";
     //}
-    recompute_helper->SaveRecomputedTensor(target, entry->ref != nullptr, {entry->tensor_name, entry->ref ? entry->ref : entry->val.get()});
+    // recompute_helper->SaveRecomputedTensor(target, entry->ref != nullptr, {entry->tensor_name, entry->ref ? entry->ref : entry->val.get()});
   }
 }
 

@@ -889,6 +889,27 @@ Status EagerExecute(EagerContext* ctx, Device* device,
     inputs[i] = *input_tensor;
   }
 
+  /* 
+  std::string ename("Reshape_4");
+  if (op_uname.compare(ename) == 0) {
+    LOG(INFO) << op_uname << " inputs number: " << inputs.size();
+    for (int i = 0; i < inputs.size(); i++) {
+      Tensor t = inputs[i];
+      if (!t.Name().empty()) {
+        LOG(INFO) << i << "th input name: " << t.Name();
+        LOG(INFO) << "Shape: " << t.shape().DebugString();
+        LOG(INFO) << "data: " << t.data();
+        LOG(INFO) << "buffer: " << t.buffer();
+      } else {
+        LOG(INFO) << i << "th input with empty name";
+        LOG(INFO) << "Shape: " << t.shape().DebugString();
+        LOG(INFO) << "data: " << t.data();
+        LOG(INFO) << "buffer: " << t.buffer();
+      }
+    }
+  
+  } */
+
   ScopedStepContainer* container = ctx->StepContainer();
 
   RecordKernelAndInputs(op_uname, kernel, container, op_inputs);
@@ -916,6 +937,12 @@ Status EagerExecute(EagerContext* ctx, Device* device,
     for (int i = 0; i < outputs.size(); ++i) {
       std::string tensor_name = op_uname + ":" + std::to_string(i);
       outputs[i].SetName(tensor_name);
+      // if (tensor_name.compare("Shape_7:0") == 0) {
+      //   LOG(INFO) << tensor_name;
+      //   LOG(INFO) << "Shape: " << outputs[i].shape().DebugString();
+      //   LOG(INFO) << "data: " << outputs[i].data();
+      //   LOG(INFO) << "buffer: " << outputs[i].buffer();
+      // }
     // outputs[i].RecordSwapContext({tensor_name, nullptr, nullptr});
     }
     CollectOutputs(outputs);

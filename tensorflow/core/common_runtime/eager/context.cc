@@ -73,7 +73,9 @@ EagerContext::EagerContext(const SessionOptions& opts,
   }
   record_op = (GetEnv("TF_RECORD_OP") == "true") ? true : false;
   LOG(INFO) << "TF_RECORD_OP: " << (record_op ? "true" : "false");
-  // InitPerIterOpCount();
+  // if (record_op == true) {
+  //   InitPerIterOpCount();
+  // }
   /* fout_in.open(innodes_file.c_str(), fout_in.out);
   if (!fout_in.is_open()) {
     LOG(INFO) << "Can not open innodes file: " << innodes_file;
@@ -232,7 +234,8 @@ Status EagerContext::FindDeviceByName(const string& name, Device** result) {
   return Status::OK();
 }
 
-/* void EagerContext::InitPerIterOpCount() {
+/*
+void EagerContext::InitPerIterOpCount() {
   std::string op_count_file = GetEnv(op_count_env);
   if (op_count_file.empty()) {
     LOG(INFO) << "There is no op count per iter file specified, can not do mem-opt then.";
@@ -340,13 +343,13 @@ void EagerContext::StartStep() {
 
 void EagerContext::EndStep() {
   mutex_lock ml(metadata_mu_);
-  // std::lock_guard<std::mutex> l(op_name_mu_);
+  std::lock_guard<std::mutex> l(op_name_mu_);
   num_active_steps_--;
   if (num_active_steps_ == 0) {
     step_container_.reset();
   }
   LOG(INFO) << "EndStep";
-  /* std::string fout_name = "/vpublic01/frog/vfonel/tf_eager_op_count/" + std::to_string(total_steps_) + ".txt";
+  std::string fout_name = "/mnt/maweiliang/tf_eager_op_count/" + std::to_string(total_steps_) + ".txt";
   std::fstream fout(fout_name, fout.out);
   if (!fout.is_open()) {
     LOG(FATAL) << "Can not open file: " << fout_name;
@@ -354,7 +357,7 @@ void EagerContext::EndStep() {
   for (auto& it : op_name_count_) {
     fout << it.first << "\t" << it.second << "\n";
   }
-  fout.close(); */
+  fout.close();
 }
 
 ScopedStepContainer* EagerContext::StepContainer() {

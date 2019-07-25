@@ -132,6 +132,8 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
     // if (!tensor_name.substr(0, tensor_name.find_first_of('_')).compare(EagerContext::kanonymous_op_name)) {
     //   is_anonymous = true;
     // }
+
+    t.RecordTensorAccess(tensor_name, time_);
     
     if (is_valid) {
       auto pos = tensor_name.find_first_of(':');
@@ -201,6 +203,7 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
   if (!context.status().ok()) return context.status();
 
   outputs->clear();
+  DeviceContext* dev_ctx = context.op_device_context();
   /* if (dev_ctx == nullptr) {
     // TODO(px): if this happen, get from device
     LOG(FATAL) << "Can not get DeviceContext from OpKernelContext.";
@@ -208,13 +211,16 @@ Status KernelAndDevice::Run(ScopedStepContainer* step_container,
   for (int i = 0; i < context.num_outputs(); ++i) {
     outputs->push_back(Tensor(*context.mutable_output(i)));
     // add a debug for recompute to check if the tensor.buf is null
-    if (is_recompute) {
-      if (outputs->back().buffer() == nullptr) {
-        LOG(INFO) << op_uname << "'s outputs " << i << " buffer is nullptr";
-      } else if (outputs->back().data() == nullptr) {
-        LOG(INFO) << op_uname << "'s outputs " << i << " data is nullptr";
-      }
-    }
+    // if (is_recompute) {
+    //   if (outputs->back().buffer() == nullptr) {
+    //     LOG(INFO) << op_uname << "'s outputs " << i << " buffer is nullptr";
+    //   } else if (outputs->back().data() == nullptr) {
+    //     LOG(INFO) << op_uname << "'s outputs " << i << " data is nullptr";
+    //   }
+    // }
+    if (op_uname.empty()) continue;
+    std::string tensor_name = op_uname + ":" + std::to_string(i);
+    outputs->back().RecordSwapContext({tensor_name, device_, dev_ctx});
   }
   if (stats != nullptr) {
     for (const auto& allocator_pair : context.wrapped_allocators()) {

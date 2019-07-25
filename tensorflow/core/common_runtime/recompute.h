@@ -43,7 +43,8 @@ class RecomputeHelper {
   void SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed);
  private:
   void SetRecomputedTensors(const std::string& target);
-  RecomputeHelper() { LoadRecomputePolicy(); }
+  // RecomputeHelper() { LoadRecomputePolicy(); }
+  RecomputeHelper() { }
   typedef std::pair<std::shared_ptr<std::condition_variable>, std::shared_ptr<std::mutex>> condition_variable_and_mutex;
   enum DataStatus {
     IN,

@@ -33,8 +33,8 @@ limitations under the License.
 // using perftools::gputools::DeviceMemoryBase;
 // using perftools::gputools::Stream;
 
-// #define _DEBUG
-// #define _DEBUGV2
+#define _DEBUG
+#define _DEBUGV2
 
 /* #define cudaCheckError(cudaCall) {                                                  \
     cudaError_t err = cudaCall;                                                       \

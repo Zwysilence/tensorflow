@@ -2,4 +2,4 @@ bazel build --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_
 ./bazel-bin/tensorflow/tools/pip_package/build_pip_package ../install_pkg
 # echo y > /tmp/y
 # pip uninstall tensorflow < /tmp/y
-# pip install /tmp/tensorflow_pkg/tensorflow-1.11.0-cp27-cp27mu-linux_x86_64.whl
+# pip install /mnt/maweiliang/install_pkg/tensorflow-1.11.0-cp27-cp27mu-linux_x86_64.whl
