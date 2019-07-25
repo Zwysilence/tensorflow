@@ -1514,8 +1514,8 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   }
   std::cout << "\n";
   std::cout << "Feed nodes : \n";
-  for (auto n : feed_nodes) {
-    std::cout << n->name() << " ";
+  for (auto n : feed_tensors) {
+    std::cout << n << " ";
   }
   std::cout << "\n\n";
   std::cout << "Recompute nodes: \n";
@@ -2331,6 +2331,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         MaybeMarkCompleted(input_frame, input_iter, id);
         // Continue to process the nodes in 'inline_ready'.
         completed = NodeDone(s, item.node, ready, stats, &inline_ready);
+        LOG(INFO) << tagged_node.node->name() << " PrepareInputs: status is not ok, err msg: " << s.ToString();
         continue;
       }
 
@@ -2394,7 +2395,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           if (s.ok()) {
             PropagateOutputs(state->tagged_node, state->item, &outputs, &ready);
           } else {
-            LOG(INFO) << "status is not ok";
+            LOG(INFO) << "Status is not ok (" << state->tagged_node.node->name() << ")";
           }
           outputs.clear();
 
@@ -2411,6 +2412,9 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
               NodeDone(s, state->item->node, ready, stats, nullptr);
           delete state;
           if (completed) Finish();
+          if (state->tagged_node.node->IsRecv()) {
+            LOG(INFO) << "Recv " << state->tagged_node.node->name() << " done";
+          }
         };
         nodestats::SetOpStart(stats);
         device->ComputeAsync(async, &state->ctx, done);
