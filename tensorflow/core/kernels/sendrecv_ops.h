@@ -25,6 +25,7 @@ class SendOp : public OpKernel {
  public:
   explicit SendOp(OpKernelConstruction* ctx);
   void Compute(OpKernelContext* ctx) override;
+  string RendezvousKey() { return parsed_key_.buf_; }
 
  private:
   string key_prefix_;
@@ -38,6 +39,7 @@ class RecvOp : public AsyncOpKernel {
  public:
   explicit RecvOp(OpKernelConstruction* ctx);
   void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
+  string RendezvousKey() { return parsed_key_.buf_; }
 
  private:
   string key_prefix_;

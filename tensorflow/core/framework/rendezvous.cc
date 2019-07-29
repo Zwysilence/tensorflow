@@ -36,6 +36,12 @@ namespace tensorflow {
 
 static const std::string recv_keys_file = "/tmp/recv_keys.txt";
 
+static bool IsIteratorGetNext(const string& key) {
+  static const string pattern_suffix = "_IteratorGetNext;0:0";
+  int pos = key.size() - pattern_suffix.size();
+  return key.substr(pos) == pattern_suffix;
+}
+
 Rendezvous::ParsedKey& Rendezvous::ParsedKey::operator=(const ParsedKey& b) {
   const char* b_base = b.buf_.data();
   buf_ = b.buf_;
@@ -152,14 +158,14 @@ Status Rendezvous::Recv(const ParsedKey& key, const Args& args, Tensor* val,
 class LocalRendezvousImpl : public Rendezvous {
  public:
   explicit LocalRendezvousImpl() {
-    std::fstream fin(recv_keys_file);
-    if (fin.is_open()) {
-      std::string key;
-      while(fin >> key) {
-        recv_keys_.insert(key);
-      }
-      fin.close();
-    }
+    //std::fstream fin(recv_keys_file);
+    //if (fin.is_open()) {
+    //  std::string key;
+    //  while(fin >> key) {
+    //    recv_keys_.insert(key);
+    //  }
+    //  fin.close();
+    //}
   }
 
   Status Send(const ParsedKey& key, const Args& send_args, const Tensor& val,
@@ -176,7 +182,7 @@ class LocalRendezvousImpl : public Rendezvous {
       return s;
     }
 
-    if (recv_keys_.count(string(key.FullKey()))) {
+    if (IsIteratorGetNext(string(key.FullKey()))) {
       auto& item = key_item_map_[key_hash];
       item.value = val;
       item.is_dead = is_dead;
@@ -232,7 +238,7 @@ class LocalRendezvousImpl : public Rendezvous {
 
     ItemQueue* queue = &table_[key_hash];
     if (queue->empty() || !queue->front()->IsSendValue()) {
-      if (recv_keys_.count(string(key.FullKey())) && key_item_map_.count(key_hash)) {
+      if (IsIteratorGetNext(string(key.FullKey())) && key_item_map_.count(key_hash)) {
         mu_.unlock();
         auto& item = key_item_map_[key_hash];
         done(Status::OK(), item.send_args, recv_args, item.value, item.is_dead);
@@ -331,6 +337,11 @@ class LocalRendezvousImpl : public Rendezvous {
     if (!table_.empty()) {
       StartAbort(errors::Cancelled("LocalRendezvousImpl deleted"));
     }
+    size_t total_bytes = 0;
+    for (auto& i : key_item_map_) {
+      total_bytes += i.second.value.TotalBytes();
+    }
+    LOG(INFO) << "Recv tensors total bytes is " << total_bytes;
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(LocalRendezvousImpl);
