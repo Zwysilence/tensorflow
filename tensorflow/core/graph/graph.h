@@ -194,9 +194,9 @@ class Node {
     while_ctx_ = while_ctx;
   }
 
-  void SetDeleteTensor(const std::string& tname) {
+  void SetTensorDeleted(const std::string& tname, bool deleted) {
     std::lock_guard<std::mutex> l(mu_);
-    tensor_deleted_[tname] = true;
+    tensor_deleted_[tname] = deleted;
   }
 
   bool TensorDeleted(const std::string& tname) {

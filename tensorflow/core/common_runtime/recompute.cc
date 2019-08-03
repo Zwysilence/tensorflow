@@ -88,17 +88,16 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
 
   auto& params = tensor_recompute_params_[tensor_name];
   auto& cv_mu = params.cv_mu;
-  volatile int* ready = &(params.data_ready);
   std::unique_lock<std::mutex> ul(*(cv_mu.second));
-  if (*ready == DataStatus::OUT) {
+  if (params.data_ready == DataStatus::OUT) {
     /* {
       std::lock_guard<std::mutex> l(mu_);
       if (*ready != DataStatus::OUT) return;
     } */
   #ifdef _DEBUG
-    LOG(INFO) << "Recompute " << tensor_name;
+    LOG(INFO) << "Recompute " << tensor_name << " buffer=" << params.buf;
   #endif
-    *ready = DataStatus::RECOMPUTING;
+    params.data_ready = DataStatus::RECOMPUTING;
     ul.unlock();
     recompute_calls_[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, this]() {
         SetRecomputedTensors(tensor_name);
@@ -107,21 +106,23 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
-  std::lock_guard<std::mutex> l(mu_);
+  //std::lock_guard<std::mutex> l(mu_);
   auto& tensors = saved_tensors_[target];
   for (auto& t : tensors) {
     auto& params = tensor_recompute_params_[t.first];
     auto& cv_mu = params.cv_mu;
     std::unique_lock<std::mutex> ul(*(cv_mu.second));
     if (params.data_ready != DataStatus::IN) {
-      if (params.buf->data() != nullptr)
-        LOG(FATAL) << "Buffer data should be null";
+      if (params.buf->data() != nullptr) {
+        LOG(FATAL) << "Buffer data should be null! " << t.first << " buffer=" << params.buf;
+      }
       params.buf->set_data(t.second.data());
       t.second.set_data(nullptr);
       params.data_ready = DataStatus::IN;
+      params.node->SetTensorDeleted(t.first, false);
       cv_mu.first->notify_all();
     #ifdef _DEBUG
-      LOG(INFO) << "Recompute " << t.first << " done";
+      LOG(INFO) << "Recompute " << t.first << " done. buffer=" << params.buf;
     #endif
     }
   }
@@ -130,9 +131,15 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
 
 void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
-  tensor_recompute_params_[tensor_name].buf = tensor->buffer();
-  tensor_recompute_params_[tensor_name].data_ready = DataStatus::IN;
-  tensor_recompute_params_[tensor_name].node = node;
+  auto& params = tensor_recompute_params_[tensor_name];
+  auto& cv_mu = params.cv_mu;
+  std::lock_guard<std::mutex> l(*(cv_mu.second));
+  params.buf = tensor->buffer();
+  params.data_ready = DataStatus::IN;
+  params.node = node;
+#ifdef _DEBUG
+  LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << params.buf;
+#endif
 }
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
@@ -163,7 +170,7 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
     params.data_ready = DataStatus::OUT;
     params.then_delete = false;
   #ifdef _DEBUG
-    LOG(INFO) << "Deleted " << tensor_name;
+    LOG(INFO) << "Deleted " << tensor_name << " buffer=" << buf;
   #endif
   } else if (params.using_count < 0) {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
@@ -177,12 +184,12 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
-  params.node->SetDeleteTensor(tensor_name);
   // LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
-  TensorBuffer* buf = params.buf;
-  Allocator* alloc = buf->GetAllocator();
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
+  params.node->SetTensorDeleted(tensor_name, true);
+  TensorBuffer* buf = params.buf;
+  Allocator* alloc = buf->GetAllocator();
   if (params.using_count == 0) {
     alloc->DeallocateRaw(buf->data());
     buf->set_data(nullptr);
@@ -192,7 +199,10 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
   #endif
   } else if (params.using_count > 0) {
     params.then_delete = true;
-    params.data_ready = DataStatus::OUT;
+    // params.data_ready = DataStatus::OUT;
+  #ifdef _DEBUG
+    LOG(INFO) << "Then delete " << tensor_name;
+  #endif
   } else {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
   }

@@ -19,6 +19,7 @@ limitations under the License.
 #include <functional>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
@@ -32,6 +33,14 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+
+static const std::string recv_keys_file = "/tmp/recv_keys.txt";
+
+static bool IsIteratorGetNext(const string& key) {
+  static const string pattern_suffix = "_IteratorGetNext;0:0";
+  int pos = key.size() - pattern_suffix.size();
+  return key.substr(pos) == pattern_suffix;
+}
 
 Rendezvous::ParsedKey& Rendezvous::ParsedKey::operator=(const ParsedKey& b) {
   const char* b_base = b.buf_.data();
@@ -148,12 +157,22 @@ Status Rendezvous::Recv(const ParsedKey& key, const Args& args, Tensor* val,
 
 class LocalRendezvousImpl : public Rendezvous {
  public:
-  explicit LocalRendezvousImpl() {}
+  explicit LocalRendezvousImpl() {
+    //std::fstream fin(recv_keys_file);
+    //if (fin.is_open()) {
+    //  std::string key;
+    //  while(fin >> key) {
+    //    recv_keys_.insert(key);
+    //  }
+    //  fin.close();
+    //}
+  }
 
   Status Send(const ParsedKey& key, const Args& send_args, const Tensor& val,
               const bool is_dead) override {
     uint64 key_hash = KeyHash(key.FullKey());
     VLOG(2) << "Send " << this << " " << key_hash << " " << key.FullKey();
+    //LOG(INFO) << "Send " << this << " " << key_hash << " " << key.FullKey() << " " << val.Name();
 
     mu_.lock();
     if (!status_.ok()) {
@@ -161,6 +180,16 @@ class LocalRendezvousImpl : public Rendezvous {
       Status s = status_;
       mu_.unlock();
       return s;
+    }
+
+    if (IsIteratorGetNext(string(key.FullKey()))) {
+      auto& item = key_item_map_[key_hash];
+      item.value = val;
+      item.is_dead = is_dead;
+      item.send_args = send_args;
+      if (item.send_args.device_context) {
+        item.send_args.device_context->Ref();
+      }
     }
 
     ItemQueue* queue = &table_[key_hash];
@@ -209,6 +238,13 @@ class LocalRendezvousImpl : public Rendezvous {
 
     ItemQueue* queue = &table_[key_hash];
     if (queue->empty() || !queue->front()->IsSendValue()) {
+      if (IsIteratorGetNext(string(key.FullKey())) && key_item_map_.count(key_hash)) {
+        mu_.unlock();
+        auto& item = key_item_map_[key_hash];
+        done(Status::OK(), item.send_args, recv_args, item.value, item.is_dead);
+        return;
+      }
+      LOG(INFO) << "Recv " << this << " " << key_hash << " " << key.FullKey();
       // There is no message to pick up.
       // Only recv-related fields need to be filled.
       Item* item = new Item;
@@ -294,11 +330,18 @@ class LocalRendezvousImpl : public Rendezvous {
   mutex mu_;
   Table table_ GUARDED_BY(mu_);
   Status status_ GUARDED_BY(mu_);
+  std::unordered_map<uint64, Item> key_item_map_;
+  std::unordered_set<std::string> recv_keys_;
 
   ~LocalRendezvousImpl() override {
     if (!table_.empty()) {
       StartAbort(errors::Cancelled("LocalRendezvousImpl deleted"));
     }
+    size_t total_bytes = 0;
+    for (auto& i : key_item_map_) {
+      total_bytes += i.second.value.TotalBytes();
+    }
+    LOG(INFO) << "Recv tensors total bytes is " << total_bytes;
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(LocalRendezvousImpl);

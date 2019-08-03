@@ -323,6 +323,13 @@ class ExecutorImpl : public Executor {
     }
   }
 
+  string FindSendByRecv(const string& recv_node_name) const {
+    if (recv_send_map_.count(recv_node_name)) {
+      return recv_send_map_.at(recv_node_name);
+    }
+    return "";
+  }
+
   Status Initialize();
 
   // Process all Nodes in the current graph, attempting to infer the
@@ -397,6 +404,16 @@ class ExecutorImpl : public Executor {
   // TODO(yuanbyu): We could cache it along with the graph so to avoid
   // the overhead of constructing it for each executor instance.
   gtl::FlatMap<string, FrameInfo*> frame_info_;
+
+  // rendezvous key to send node
+  std::unordered_map<string, string> key_send_map_;
+
+  // rendezvous key to recv node
+  std::unordered_map<string, string> key_recv_map_;
+
+  // recv node to send node
+  std::unordered_map<string, string> recv_send_map_;
+
 
   TF_DISALLOW_COPY_AND_ASSIGN(ExecutorImpl);
 };
@@ -654,6 +671,7 @@ Status ExecutorImpl::Initialize() {
       LOG(ERROR) << "Executor failed to create kernel. " << s;
       return s;
     }
+
     CHECK(item->kernel);
     item->kernel_is_expensive = item->kernel->IsExpensive();
     item->kernel_is_async = (item->kernel->AsAsync() != nullptr);
@@ -664,6 +682,22 @@ Status ExecutorImpl::Initialize() {
     item->is_sink = IsSink(n);
     item->is_enter_exit_or_next_iter =
         (IsEnter(n) || IsExit(n) || IsNextIteration(n));
+
+    if (item->node->IsRecv()) {
+      string key = item->kernel->RendezvousKey();
+      if (key_send_map_.count(key)) {
+        recv_send_map_[item->node->name()] = key_send_map_[key];
+      }
+      key_recv_map_[key] = item->node->name();
+    }
+
+    if (item->node->IsSend()) {
+      string key = item->kernel->RendezvousKey();
+      if (key_recv_map_.count(key)) {
+        recv_send_map_[key_recv_map_[key]] = item->node->name();
+      }
+      key_send_map_[key] = item->node->name();
+    }
 
     // Compute the maximum values we'll store for this node in the
     // pending counts data structure, and allocate a handle in
@@ -1514,8 +1548,8 @@ void ExecutorState::Recompute(const std::string& target_tensor, FrameState* fram
   }
   std::cout << "\n";
   std::cout << "Feed nodes : \n";
-  for (auto n : feed_nodes) {
-    std::cout << n->name() << " ";
+  for (auto n : feed_tensors) {
+    std::cout << n << " ";
   }
   std::cout << "\n\n";
   std::cout << "Recompute nodes: \n";
@@ -1655,6 +1689,33 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
     if (input_edges.empty() && tagged_node.node->IsRecv()) {
       int pos;
       string node_name = tagged_node.node->name();
+      string send_node_name = impl_->FindSendByRecv(node_name);
+      if (send_node_name.empty()) {
+        ready->push_back(tagged_node);
+        continue;
+      }
+      Node* send_node = FindNodeName(send_node_name);
+      if (send_node) {
+        if (visited->insert(send_node).second) {
+          if (IsEnter(send_node)) {
+            tagged_nodes->emplace_back(send_node, frame->parent_frame, frame->parent_iter, false);
+            queue.push_back(tagged_nodes->back());
+          } else if (IsExit(send_node)) {
+            LOG(FATAL) << "Not handle exit node yet.";
+            return;
+          } else if (IsNextIteration(send_node)) {
+            tagged_nodes->emplace_back(send_node, frame, iter-1, false);
+            queue.push_back(tagged_nodes->back());
+          } else {
+            tagged_nodes->emplace_back(send_node, frame, iter, false);
+            queue.push_back(tagged_nodes->back());
+          }
+        }
+      } else {
+        LOG(INFO) << send_node_name << " is not exist";
+      }
+      
+      /*
       pos = node_name.rfind('/');
       if (pos != std::string::npos) {
         std::vector<std::string> src_names = 
@@ -1685,6 +1746,8 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
       } else {
         LOG(FATAL) << "Recv node name is not the same as we expected";
       }
+      */
+      /*
       auto in_nodes = tagged_node.node->in_nodes();
       for (auto in : in_nodes) {
         if (visited->insert(in).second) {
@@ -1703,6 +1766,7 @@ void ExecutorState::ReverseBFS(const std::unordered_set<const Node*>& feed_nodes
           }
         }
       }
+      */
       continue;
     }
     if (input_edges.empty()) ready->push_back(tagged_node);
@@ -2329,6 +2393,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         MaybeMarkCompleted(input_frame, input_iter, id);
         // Continue to process the nodes in 'inline_ready'.
         completed = NodeDone(s, item.node, ready, stats, &inline_ready);
+        LOG(INFO) << tagged_node.node->name() << " PrepareInputs: status is not ok, err msg: " << s.ToString();
         continue;
       }
 
@@ -2392,7 +2457,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
           if (s.ok()) {
             PropagateOutputs(state->tagged_node, state->item, &outputs, &ready);
           } else {
-            LOG(INFO) << "status is not ok";
+            LOG(INFO) << "Status is not ok (" << state->tagged_node.node->name() << ")";
           }
           outputs.clear();
 

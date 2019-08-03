@@ -122,6 +122,9 @@ class OpKernel {
   // to "inline" inexpensive kernels.
   virtual bool IsExpensive() { return expensive_; }
 
+  // for rendezvous, valid if kernel is RecvOp or SendOp
+  virtual string RendezvousKey() { return ""; }
+
   // Accessors.
   const NodeDef& def() const { return *def_; }
   const string& name() const;              // Same as def().name()
