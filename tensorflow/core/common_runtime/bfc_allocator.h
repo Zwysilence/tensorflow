@@ -21,6 +21,7 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <functional>
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/common_runtime/visitable_allocator.h"
@@ -58,6 +59,8 @@ class BFCAllocator : public VisitableAllocator {
                     const AllocationAttributes& allocation_attr) override;
   void DeallocateRaw(void* ptr) override;
 
+  void DeallocateRawSwap(void* ptr, std::function<void()> f);
+
   void AddAllocVisitor(Visitor visitor) override;
 
   // Does nothing, because memory is never freed.
@@ -80,7 +83,9 @@ class BFCAllocator : public VisitableAllocator {
 
   void* AllocateRawInternal(size_t alignment, size_t num_bytes,
                             bool dump_log_on_failure);
-  void DeallocateRawInternal(void* ptr);
+  void DeallocateRawInternal(void* ptr,
+                             bool is_swap=false,
+                             std::function<void()> f=nullptr);
 
   // A ChunkHandle is an index into the chunks_ vector in BFCAllocator
   // kInvalidChunkHandle means an invalid chunk
@@ -133,6 +138,10 @@ class BFCAllocator : public VisitableAllocator {
 
     // What bin are we in?
     BinNum bin_num = kInvalidBinNum;
+
+    bool is_in_swap = false;
+
+    std::function<void()> wait_event = nullptr;
 
     bool in_use() const { return allocation_id != -1; }
 
@@ -434,6 +443,8 @@ class BFCAllocator : public VisitableAllocator {
   RegionManager region_manager_ GUARDED_BY(lock_);
 
   std::vector<Chunk> chunks_ GUARDED_BY(lock_);
+
+  std::vector<ChunkHandle> swap_chunks_ GUARDED_BY(lock_);
 
   // Pointer to head of linked list of free Chunks
   ChunkHandle free_chunks_list_ GUARDED_BY(lock_);

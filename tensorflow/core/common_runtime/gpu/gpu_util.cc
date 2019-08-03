@@ -285,13 +285,15 @@ void GPUUtil::CopyGPUTensorToCPU(Device* gpu_device,
   }
   // Use of the input may outlive stack scope, so keep a ref.
   TensorReference input_ref(*gpu_tensor);
+  send_stream->ThenWaitFor(send_device_to_host_stream);
+  input_ref.Unref();
   dev_info->event_mgr->ThenExecute(
       send_device_to_host_stream,
       [send_device_to_host_stream, done, input_ref]() {
         if (!send_device_to_host_stream->ok()) {
           LOG(FATAL) << "GPU->CPU Memcpy failed";
         }
-        input_ref.Unref();
+        // input_ref.Unref();
         done(Status::OK());
       });
 }
