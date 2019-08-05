@@ -752,7 +752,7 @@ Status DirectSession::Run(const RunOptions& run_options,
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
     static int graph_id_ = 0;
-    std::string graph_dir = "/home/frog/maweiliang/tf_static_graph/";
+    std::string graph_dir = "/mnt/maweiliang/tf_static_graph/";
     for (auto& item : executors_and_keys->items) {
       graph_id_++;
       std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";

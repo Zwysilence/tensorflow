@@ -29,6 +29,7 @@ limitations under the License.
 
 namespace stream_executor {
 class Event;
+class Stream;
 } // namespace stream_executor
 
 namespace tensorflow {
@@ -148,7 +149,8 @@ class Allocator {
                           TensorBuffer* tensor_buf,
                           se::Event**,
                           bool,
-                          std::function<void(std::function<void()>)>) {}
+                          std::function<void(std::function<void()>)>,
+                          se::Stream*) {}
 
   virtual void Notify(TensorBuffer*) {}
 
