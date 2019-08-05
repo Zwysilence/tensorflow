@@ -393,7 +393,7 @@ void BFCAllocator::DeallocateRaw(void* ptr) {
 
 void BFCAllocator::DeallocateRawSwap(void* ptr, std::function<void()> f) {
   DeallocateRawInternal(ptr, true, std::move(f));
-  // retry_helpter_.NotifyDealloc();
+  retry_helper_.NotifyDealloc();
 }
 
 void BFCAllocator::DeallocateRawInternal(void* ptr, bool is_swap, std::function<void()> f) {
