@@ -139,7 +139,7 @@ class BFCAllocator : public VisitableAllocator {
     // What bin are we in?
     BinNum bin_num = kInvalidBinNum;
 
-    bool is_in_swap=false
+    bool is_in_swap=false;
 
     std::function<void()> wait_event = nullptr;
 
