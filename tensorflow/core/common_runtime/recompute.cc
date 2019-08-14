@@ -20,6 +20,7 @@ static std::string GetEnv(const std::string& env) {
 }
 
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
+  LOG(INFO) << "RecordTensorAccess " << tensor_name;
   if (tensor_recompute_params_.count(tensor_name)) {
     RecomputeTensor(tensor_name);
     auto& recompute_params = tensor_recompute_params_[tensor_name];
@@ -130,6 +131,9 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
 }
 
 void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node) {
+#ifdef _DEBUG
+  LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << tensor->buffer() << " data=" << (tensor->buffer()?tensor->buffer()->data():0);
+#endif
   if (!tensor_recompute_params_.count(tensor_name)) return;
   auto& params = tensor_recompute_params_[tensor_name];
   auto& cv_mu = params.cv_mu;
@@ -137,9 +141,6 @@ void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* t
   params.buf = tensor->buffer();
   params.data_ready = DataStatus::IN;
   params.node = node;
-#ifdef _DEBUG
-  LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << params.buf;
-#endif
 }
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
@@ -164,14 +165,14 @@ void RecomputeHelper::DecrementUsingCount(const std::string& tensor_name) {
   params.using_count--;
   if (params.using_count == 0 && params.then_delete) {
     TensorBuffer* buf = params.buf;
+  #ifdef _DEBUG
+    LOG(INFO) << "Deleted " << tensor_name << " buffer=" << buf << " data=" << buf->data();
+  #endif
     Allocator* alloc = buf->GetAllocator();
     alloc->DeallocateRaw(buf->data());
     buf->set_data(nullptr);
     params.data_ready = DataStatus::OUT;
     params.then_delete = false;
-  #ifdef _DEBUG
-    LOG(INFO) << "Deleted " << tensor_name << " buffer=" << buf;
-  #endif
   } else if (params.using_count < 0) {
     LOG(FATAL) << "Using count of " << tensor_name << " is less than 0.";
     params.using_count = 0;
