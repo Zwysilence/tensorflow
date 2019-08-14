@@ -83,7 +83,8 @@ class GPUBFCAllocator : public BFCAllocator {
                   TensorBuffer* tensor_buf,
                   se::Event** e,
                   bool before,
-                  Runner runner) override;
+                  Runner runner,
+                  se::Stream* s) override;
 
  private:
 

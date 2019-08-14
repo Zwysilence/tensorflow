@@ -747,12 +747,10 @@ Status DirectSession::Run(const RunOptions& run_options,
   TF_RETURN_IF_ERROR(RunInternal(step_id, run_options, &call_frame,
                                  executors_and_keys, run_metadata));
 
-  // int64 end_time = now_in_usec();
-
   const bool do_trace = (run_options.trace_level() > RunOptions::NO_TRACE);
   if (do_trace) {
     static int graph_id_ = 0;
-    std::string graph_dir = "/home/frog/maweiliang/tf_static_graph/";
+    std::string graph_dir = "/mnt/maweiliang/tf_static_graph/";
     for (auto& item : executors_and_keys->items) {
       graph_id_++;
       std::string graph_fanout_filename = graph_dir + std::to_string(graph_id_) + "_outnodes.txt";
@@ -792,6 +790,9 @@ Status DirectSession::Run(const RunOptions& run_options,
       fout_n2i.close();
     }
   }
+
+
+  // int64 end_time = now_in_usec();
 
   // Receive outputs.
   if (outputs) {

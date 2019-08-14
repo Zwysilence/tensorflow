@@ -523,7 +523,7 @@ void BaseGPUDevice::CheckInputs(se::Stream* stream,
 
     se::Event* e = nullptr;
     // func_ will check the tensor's SwapStatus in runtime
-    gpu_allocator_->CheckInput(tensor_name, tensor->buf_, &e, before, func_);
+    gpu_allocator_->CheckInput(tensor_name, tensor->buf_, &e, before, func_, stream);
     if (e != nullptr) {
       stream->ThenWaitFor(e);
     }

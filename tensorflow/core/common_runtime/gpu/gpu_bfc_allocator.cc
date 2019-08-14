@@ -289,7 +289,8 @@ void GPUBFCAllocator::CheckInput(const string& tensor_name,
                                  TensorBuffer* tensor_buf,
                                  se::Event** e,
                                  bool before,
-                                 Runner runner) {
+                                 Runner runner,
+                                 se::Stream* s) {
   if (tensor_swap_params_map_.count(tensor_name) == 0) return;
 
   auto& swap_params = tensor_swap_params_map_[tensor_name];
@@ -344,31 +345,34 @@ void GPUBFCAllocator::CheckInput(const string& tensor_name,
         #ifdef _DEBUG2
           LOG(INFO) << "Deallocate " << swap_params.tensor_name << " when enqueue comp success.";
         #endif
-          DeallocateRaw(tensor_buf->data());
+          auto wait_out_event = [=] () {
+            s->ThenWaitFor(swap_params.out_e);
+          };
+          DeallocateRawSwap(tensor_buf->data(), wait_out_event);
           swap_params.need_dealloc = false;
         }
-        *e = swap_params.out_e;
+        // *e = swap_params.out_e;
         // swap_params.need_wait_out = false;
         swap_params.data_ready.set_waitout();
       #ifdef _DEBUGV2
         LOG(INFO) << "Wait " << tensor_name << " swap out event.";
       #endif
-        auto done = [&swap_params] () {
-          auto& cv_mu = swap_params.cv_mu;
-          std::lock_guard<std::mutex> l(*(cv_mu.second));
-          // LOG(INFO) << "Check " << swap_params.tensor_name << " swap out status";
-          auto& ready = swap_params.data_ready;
-          // CHECK(ready.is_out() || ready.is_swapout());
-          if (!(ready.is_out() || ready.is_swapout())) {
-            LOG(FATAL) << swap_params.tensor_name << " status: " << (ready.is_in() ? 1 : 0);
-          }
-          if (ready.is_swapout()) {
-          #ifdef _DEBUG
-            LOG(INFO) << swap_params.tensor_name << " not finish swap out when comp finish.";
-          #endif
-          }          
-        };
-        runner(done);
+        // auto done = [&swap_params] () {
+        //   auto& cv_mu = swap_params.cv_mu;
+        //   std::lock_guard<std::mutex> l(*(cv_mu.second));
+        //   // LOG(INFO) << "Check " << swap_params.tensor_name << " swap out status";
+        //   auto& ready = swap_params.data_ready;
+        //   // CHECK(ready.is_out() || ready.is_swapout());
+        //   if (!(ready.is_out() || ready.is_swapout())) {
+        //     LOG(FATAL) << swap_params.tensor_name << " status: " << (ready.is_in() ? 1 : 0);
+        //   }
+        //   if (ready.is_swapout()) {
+        //   #ifdef _DEBUG
+        //     LOG(INFO) << swap_params.tensor_name << " not finish swap out when comp finish.";
+        //   #endif
+        //   }          
+        // };
+        // runner(done);
       }
     }
   }
