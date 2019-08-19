@@ -338,7 +338,9 @@ Graph::~Graph() {
     }
   }
   for (Node* node : free_nodes_) {
-    node->~Node();
+    if (node != nullptr) {
+      node->~Node();
+    }
   }
   // Edges have no destructor, and we arena-allocated them, so no need to
   // destroy them.

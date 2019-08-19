@@ -2552,7 +2552,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       if (s.ok()) {
         PropagateOutputs(tagged_node, &item, &outputs, &ready);
       } else {
-        LOG(INFO) << "status is not ok";
+        LOG(INFO) << "Status is not ok (" << tagged_node.node->name() << ")";
       }
       outputs.clear();
       if (!accessed_tensors.empty()) {

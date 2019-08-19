@@ -8,7 +8,7 @@
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/graph/graph.h"
 
-#define _DEBUG
+// #define _DEBUG
 
 namespace tensorflow {
 
@@ -131,15 +131,29 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
 
 void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node) {
   if (!tensor_recompute_params_.count(tensor_name)) return;
+#ifdef _DEBUG
+  LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << tensor->buffer() << " data=" << tensor->data();
+#endif
   auto& params = tensor_recompute_params_[tensor_name];
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.buf = tensor->buffer();
   params.data_ready = DataStatus::IN;
   params.node = node;
-#ifdef _DEBUG
-  LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << params.buf;
-#endif
+
+  auto& trigger = triggers_[tensor_name];
+  if (trigger.delete_trigger_count == 0) {
+    Allocator* alloc = params.buf->GetAllocator();
+    if (alloc->Name() != "cpu" && params.using_count == 0) {
+      alloc->DeallocateRaw(params.buf->data());
+      params.node->SetTensorDeleted(tensor_name, true);
+      params.buf->set_data(nullptr);
+      params.data_ready = DataStatus::OUT;
+    #ifdef _DEBUG
+      LOG(INFO) << "Deleted " << tensor_name; // << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
+    #endif
+    }
+  }
 }
 
 void RecomputeHelper::RecordRecomputeCall(const std::string& tensor_name, RecomputeCall call) {
@@ -184,7 +198,9 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
-  // LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
+  #ifdef _DEBUG
+  LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
+  #endif
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.node->SetTensorDeleted(tensor_name, true);
