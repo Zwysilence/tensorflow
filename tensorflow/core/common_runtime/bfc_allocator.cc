@@ -197,6 +197,13 @@ void* BFCAllocator::AllocateRaw(size_t unused_alignment, size_t num_bytes) {
         },
         kMaxMillisToWait, unused_alignment, num_bytes);
   }
+
+  // if (r != nullptr) {
+  //   return r;
+  // } else {
+  //   // free swap memory first
+
+  // }
 }
 
 void* BFCAllocator::AllocateRaw(size_t unused_alignment, size_t num_bytes,
@@ -258,6 +265,18 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
 
   // Try to extend
   if (Extend(unused_alignment, rounded_bytes)) {
+    ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes);
+    if (ptr != nullptr) {
+      return ptr;
+    }
+  }
+
+  // Try to release swap
+  for (auto it = swap_chunks_.begin(); it != swap_chunks_.end();) {
+    Chunk* c = ChunkFromHandle(*it);
+    c->wait_event();
+    FreeAndMaybeCoalesce(*it);
+    it = swap_chunks_.erase(it);
     ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes);
     if (ptr != nullptr) {
       return ptr;
@@ -372,7 +391,12 @@ void BFCAllocator::DeallocateRaw(void* ptr) {
   retry_helper_.NotifyDealloc();
 }
 
-void BFCAllocator::DeallocateRawInternal(void* ptr) {
+void BFCAllocator::DeallocateRawSwap(void* ptr, std::function<void()> f) {
+  DeallocateRawInternal(ptr, true, std::move(f));
+  retry_helper_.NotifyDealloc();
+}
+
+void BFCAllocator::DeallocateRawInternal(void* ptr, bool is_swap, std::function<void()> f) {
   if (ptr == nullptr) {
     LOG(ERROR) << "tried to deallocate nullptr";
     return;
@@ -384,7 +408,16 @@ void BFCAllocator::DeallocateRawInternal(void* ptr) {
   CHECK(h != kInvalidChunkHandle);
 
   // Consider coalescing it.
-  FreeAndMaybeCoalesce(h);
+  if (is_swap) {
+    Chunk* c = ChunkFromHandle(h);
+    CHECK(c->in_use() && (c->bin_num == kInvalidBinNum));
+    c->is_in_swap = true;
+    // c->wait_event(std::move(f));
+    c->wait_event = f;
+    swap_chunks_.push_back(h);
+  } else {
+    FreeAndMaybeCoalesce(h);
+  }
 
   if (VLOG_IS_ON(4)) {
     LOG(INFO) << "F: " << RenderOccupancy();
@@ -463,6 +496,10 @@ void BFCAllocator::FreeAndMaybeCoalesce(BFCAllocator::ChunkHandle h) {
 
   // Mark the chunk as no longer in use.
   c->allocation_id = -1;
+
+  // Clean the swap mark
+  c->is_in_swap = false;
+  c->wait_event = nullptr;
 
   // Updates the stats.
   stats_.bytes_in_use -= c->size;

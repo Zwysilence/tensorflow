@@ -40,6 +40,7 @@ limitations under the License.
 #include <functional>
 #include <string>
 #include <vector>
+#include <memory>
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/op.h"
@@ -196,12 +197,19 @@ class Node {
 
   void SetTensorDeleted(const std::string& tname, bool deleted) {
     std::lock_guard<std::mutex> l(mu_);
-    tensor_deleted_[tname] = deleted;
+    if (!tensor_deleted_[tname].get()) {
+      tensor_deleted_[tname].reset(new bool);
+    }
+    *tensor_deleted_[tname] = deleted;
   }
 
   bool TensorDeleted(const std::string& tname) {
     std::lock_guard<std::mutex> l(mu_);
-    return tensor_deleted_[tname];
+    return *tensor_deleted_[tname];
+  }
+
+  void SharedTensorStatusWith(const std::string& tname, Node* other_node, const std::string& other_tensor) {
+    tensor_deleted_[tname] = other_node->tensor_deleted_[other_tensor];
   }
 
   void RefTensor(const std::string& tname) {
@@ -303,7 +311,7 @@ class Node {
   // for recomputation checking
   std::unordered_map<string, int> ref_counts_;
 
-  std::unordered_map<string, bool> tensor_deleted_;
+  std::unordered_map<string, std::shared_ptr<bool>> tensor_deleted_;
   
   // protect ref_counts_ 
   std::mutex mu_;
