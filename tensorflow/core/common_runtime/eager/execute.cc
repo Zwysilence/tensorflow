@@ -43,8 +43,28 @@ limitations under the License.
 
 namespace tensorflow {
 
-class VirtualNode;
-extern std::unordered_map<std::string, VirtualNode*> uop_vnode_map;
+struct VirtualNode {
+
+  struct OutputTensor {
+    int out_slot;
+    int in_slot;
+    VirtualNode* to_vnode;
+    OutputTensor() = default;
+    OutputTensor(const OutputTensor&) = default;
+    OutputTensor(OutputTensor&&) = default;
+    OutputTensor(int os, int is, VirtualNode* vn) : out_slot(os), in_slot(is), to_vnode(vn) {}
+  };
+
+  gtl::InlinedVector<TensorHandle*, 4> inputs;  // update per iteration
+  std::vector<std::string> input_op_names;
+  //std::vector<OutputTensor> output_tensors;
+  std::unordered_map<std::string, OutputTensor> output_tensors;
+  std::string op_name;
+  KernelAndDevice* kernel;
+  ScopedStepContainer* container; 
+};
+
+std::unordered_map<std::string, VirtualNode*> uop_vnode_map;
 std::mutex mu;
 
 namespace {
