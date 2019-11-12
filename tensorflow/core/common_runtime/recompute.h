@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 
+#include "tensorflow/core/common_runtime/bfc_allocator.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/framework/tensor.h"
 
@@ -15,6 +16,7 @@ namespace tensorflow {
 class TensorBuffer;
 class Tensor;
 class Node;
+class BFCAllocator;
 class RecomputeHelper {
   ~RecomputeHelper() = default;
   RecomputeHelper(const RecomputeHelper&) = delete;
@@ -41,7 +43,7 @@ class RecomputeHelper {
   void IncrementUsingCount(const std::string& tensor_name);
   void DecrementUsingCount(const std::string& tensor_name);
   void SetRecomputing(const std::string& target_tensor, const std::vector<std::string>& recompute_nodes);
-  void SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed);
+  void SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed);  
  private:
   void SetRecomputedTensors(const std::string& target);
   RecomputeHelper() { LoadRecomputePolicy(); }
@@ -60,6 +62,8 @@ class RecomputeHelper {
     volatile int using_count;
     bool then_delete;
     Node* node;
+    bool self_trigger;
+    bool del;
   };
 
   struct TriggerInfo {
@@ -77,6 +81,13 @@ class RecomputeHelper {
   std::unordered_map<std::string, std::vector<std::string>> node_to_tensors_;
   std::unordered_map<std::string, std::unordered_map<std::string, Tensor>> saved_tensors_;
   std::unordered_map<std::string, std::unordered_set<std::string>> recompute_tensors_;
+  std::vector<std::pair<std::string, Tensor*>> recomp_tensors_coll_;
+  // std::vector<std::string> recomp_tensors_coll_;
+  std::unordered_map<std::string, bool> tensors_stats_;
+  // std::vector<std::pair<std::string, void*>> recomp_tensors_coll_;
+  // std::vector<std::pair<std::string, TensorBuffer*> recomp_tensors_coll_;
   std::mutex mu_;
+
+  friend class BFCAllocator;   // for access to recomp_tensors_coll_
 };
 }

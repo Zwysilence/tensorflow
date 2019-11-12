@@ -14,10 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include <atomic>
+#include <chrono>
 
 #include "tensorflow/core/common_runtime/bfc_allocator.h"
 
 #include "tensorflow/core/common_runtime/allocator_retry.h"
+#include "tensorflow/core/common_runtime/recompute.h"
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/core/bits.h"
 #include "tensorflow/core/lib/gtl/stl_util.h"
 #include "tensorflow/core/lib/strings/numbers.h"
@@ -28,6 +31,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+
+class Node;
 
 BFCAllocator::BFCAllocator(SubAllocator* sub_allocator, size_t total_memory,
                            bool allow_growth, const string& name)
@@ -277,6 +282,77 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
     c->wait_event();
     FreeAndMaybeCoalesce(*it);
     it = swap_chunks_.erase(it);
+    ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes);
+    if (ptr != nullptr) {
+      return ptr;
+    }
+  }
+
+  // Try to release recomp
+  RecomputeHelper* recompute_helper = RecomputeHelper::GlobalRecomputeHelper();
+  auto& recomp_tensors = recompute_helper->recomp_tensors_coll_;
+  auto& tensors_stats = recompute_helper->tensors_stats_;
+  // TODO(px): this lock spends little time
+  // and though the time of "try to release recomp" is not that stable,
+  // but it introduces few affect on the final perf. (final perf. is significantly unstable.)
+  std::lock_guard<std::mutex> rl(recompute_helper->mu_);
+  for (auto it = recomp_tensors.begin(); it != recomp_tensors.end();) {
+    auto& tensor_name = it->first;
+    Tensor* t = it->second;
+    
+    auto& params = recompute_helper->tensor_recompute_params_[tensor_name];
+    auto& cv_mu = params.cv_mu;
+    {
+      std::lock_guard<std::mutex> pl(*(cv_mu.second));
+      if (params.self_trigger) {
+        // LOG(INFO) << tensor_name << " is already being used, ignore it";
+        it = recomp_tensors.erase(it);
+        continue;
+      }
+      
+      if (params.using_count == 0) {
+        TensorBuffer* buf = params.buf;
+        void* data;
+        if (tensors_stats[tensor_name]) {
+          // Saved recomputed tensors but not set
+          // LOG(INFO) << tensor_name << " uses saved recomputed tensor's data";
+          data = t->data();
+        } else {
+          // data transfered from saved recomputed tensor to original tensor
+          if (params.del) {
+            // LOG(INFO) << tensor_name << " is already destroyed";
+            it = recomp_tensors.erase(it);
+            continue;
+          }
+          data = buf->data();
+        }
+        
+        if (data == nullptr) {
+          // LOG(INFO) << tensor_name << "'s data is null";
+          it = recomp_tensors.erase(it);
+          continue;
+        }
+        // LOG(INFO) << "Try to release " << tensor_name << "'s memory: " << data;
+        // BFCAllocator::ChunkHandle h = region_manager_.get_handle(buf->data());
+        BFCAllocator::ChunkHandle h = region_manager_.get_handle(data);
+        CHECK(h != kInvalidChunkHandle);
+        FreeAndMaybeCoalesce(h);
+        params.buf->set_data(nullptr);
+        params.data_ready = RecomputeHelper::DataStatus::OUT;
+        params.node->SetTensorDeleted(tensor_name, true);        
+        // delete t;
+        if (tensors_stats[tensor_name]) {
+          // LOG(INFO) << "delete saved recomputed tensor: " << tensor_name;
+          delete t;
+          tensors_stats[tensor_name] = false;
+        }
+        // LOG(INFO) << "Delete " << tensor_name; // << "(" << readable_names_[tensor_name] << ") Buffer " << buf;
+        it = recomp_tensors.erase(it);
+      } else {
+        ++it;
+        continue;
+      }
+    }
     ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes);
     if (ptr != nullptr) {
       return ptr;

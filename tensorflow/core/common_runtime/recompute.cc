@@ -9,6 +9,7 @@
 #include "tensorflow/core/graph/graph.h"
 
 // #define _DEBUG
+// #define _DEBUG2
 
 namespace tensorflow {
 
@@ -20,7 +21,7 @@ static std::string GetEnv(const std::string& env) {
 }
 
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
-  LOG(INFO) << "RecordTensorAccess " << tensor_name;
+  // LOG(INFO) << "RecordTensorAccess " << tensor_name;
   if (tensor_recompute_params_.count(tensor_name)) {
     RecomputeTensor(tensor_name);
     auto& recompute_params = tensor_recompute_params_[tensor_name];
@@ -41,6 +42,12 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
     cnt = ++trigger.access_count;
     if (trigger.access_count == trigger.total_access_count) {
       trigger.access_count = 0;
+      {
+        auto& recompute_params = tensor_recompute_params_[tensor_name];
+        auto& cv_mu = recompute_params.cv_mu;
+        std::lock_guard<std::mutex> pl(*(cv_mu.second));
+        recompute_params.del = true;
+      }
     }
   }
   if (trigger.delete_trigger_count != 0 && cnt == trigger.delete_trigger_count) {
@@ -54,10 +61,11 @@ void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const u
 
 void RecomputeHelper::SetRecomputing(const std::string& target_tensor, const std::vector<std::string>& recompute_nodes) {
   int cnt = 0;
-  auto& recompute_tensors = recompute_tensors_[target_tensor];
+  // auto& recompute_tensors = recompute_tensors_[target_tensor];
   for (auto& node_name : recompute_nodes) {
     for (auto& tensor_name : node_to_tensors_[node_name]) {
-      if (!recompute_tensors.count(tensor_name)) continue;
+      // if (!recompute_tensors.count(tensor_name)) continue;
+      if (!tensor_recompute_params_.count(tensor_name)) continue;
       auto& params = tensor_recompute_params_[tensor_name];
       auto& cv_mu = params.cv_mu;
       std::lock_guard<std::mutex> l(*(cv_mu.second));
@@ -74,9 +82,17 @@ void RecomputeHelper::SetRecomputing(const std::string& target_tensor, const std
 }
 
 void RecomputeHelper::SaveRecomputedTensor(const std::string& target, bool is_ref, const std::pair<std::string, Tensor*>& recomputed) {
-  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first) || !recompute_tensors_[target].count(recomputed.first))
+  if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first)) {
     return;
+  }
+  // if (!tensor_recompute_params_.count(target) || !tensor_recompute_params_.count(recomputed.first) || !recompute_tensors_[target].count(recomputed.first))
+  //   return;
+  std::lock_guard<std::mutex> l(mu_);
   saved_tensors_[target][recomputed.first] = *(recomputed.second);
+  
+  Tensor* t = &(saved_tensors_[target][recomputed.first]);
+  recomp_tensors_coll_.push_back(std::make_pair(recomputed.first, t));
+  tensors_stats_[recomputed.first] = true;
   if (is_ref) {
     LOG(FATAL) << "entry is a reference, handle it now.";
   }
@@ -99,6 +115,7 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
     LOG(INFO) << "Recompute " << tensor_name << " buffer=" << params.buf;
   #endif
     params.data_ready = DataStatus::RECOMPUTING;
+    params.self_trigger = true;
     ul.unlock();
     recompute_calls_[tensor_name](params.target_tensor, params.feed_tensors, [&tensor_name, this]() {
         SetRecomputedTensors(tensor_name);
@@ -107,12 +124,15 @@ void RecomputeHelper::RecomputeTensor(const std::string& tensor_name) {
 }
 
 void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
-  //std::lock_guard<std::mutex> l(mu_);
+  std::lock_guard<std::mutex> l(mu_);
   auto& tensors = saved_tensors_[target];
   for (auto& t : tensors) {
+    if (!tensors_stats_[t.first]) {
+      continue;
+    }
     auto& params = tensor_recompute_params_[t.first];
     auto& cv_mu = params.cv_mu;
-    std::unique_lock<std::mutex> ul(*(cv_mu.second));
+    std::unique_lock<std::mutex> ul(*(cv_mu.second));    
     if (params.data_ready != DataStatus::IN) {
       if (params.buf->data() != nullptr) {
         LOG(FATAL) << "Buffer data should be null! " << t.first << " buffer=" << params.buf;
@@ -125,17 +145,18 @@ void RecomputeHelper::SetRecomputedTensors(const std::string& target) {
     #ifdef _DEBUG
       LOG(INFO) << "Recompute " << t.first << " done. buffer=" << params.buf;
     #endif
+      tensors_stats_[t.first] = false;
     }
   }
   tensors.clear();
 }
 
 void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* tensor, Node* node) {
-#ifdef _DEBUG
+#ifdef _DEBUG2
   LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << tensor->buffer() << " data=" << (tensor->buffer()?tensor->buffer()->data():0);
 #endif
   if (!tensor_recompute_params_.count(tensor_name)) return;
-#ifdef _DEBUG
+#ifdef _DEBUG2
   LOG(INFO) << "Record Tensor Info " << tensor_name << " buffer=" << tensor->buffer() << " data=" << tensor->data();
 #endif
   auto& params = tensor_recompute_params_[tensor_name];
@@ -144,6 +165,8 @@ void RecomputeHelper::RecordTensorInfo(const std::string& tensor_name, Tensor* t
   params.buf = tensor->buffer();
   params.data_ready = DataStatus::IN;
   params.node = node;
+  params.self_trigger = false;
+  params.del = false;
 
   auto& trigger = triggers_[tensor_name];
   if (trigger.delete_trigger_count == 0) {
@@ -202,9 +225,9 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
     LOG(FATAL) << "Tensor buffer used but not initialzed.";
     return;
   }
-  #ifdef _DEBUG
+#ifdef _DEBUG
   LOG(INFO) << "Deleting memory of " << tensor_name << "(" << readable_names_[tensor_name] << ") Buffer " << params.buf;
-  #endif
+#endif
   auto& cv_mu = params.cv_mu;
   std::lock_guard<std::mutex> l(*(cv_mu.second));
   params.node->SetTensorDeleted(tensor_name, true);
@@ -228,6 +251,65 @@ void RecomputeHelper::DeleteMemory(const std::string& tensor_name) {
   }
 }
 
+// void RecomputeHelper::LoadRecomputePolicy() {
+//   std::string policy_file = GetEnv(recompute_policy_env);
+//   if (policy_file.empty()) {
+//     LOG(INFO) << "No recompute policy specified";
+//     return;
+//   }
+//   std::fstream fin(policy_file, fin.in);
+//   if (!fin.is_open()) {
+//     LOG(INFO) << "open " << policy_file << " failed.";
+//     return;
+//   }
+//   std::string target_tensor, trigger_tensor, feed_tensor, line;
+//   int del_cnt, total1, compute_cnt, total2, num_recomp_tensors;
+//   while(std::getline(fin, line)) {
+//     if (line.empty() || line[0] == '#') continue;
+//     std::istringstream iss(line);
+//     iss >> target_tensor >> total1 >> del_cnt >> trigger_tensor >> total2 >> compute_cnt;
+//     auto& params = tensor_recompute_params_[target_tensor];
+//     params.target_tensor = target_tensor;
+//     params.cv_mu = std::make_pair(std::make_shared<std::condition_variable>(), std::make_shared<std::mutex>());
+
+//     recompute_tensors_[target_tensor].insert(target_tensor);
+//     iss >> num_recomp_tensors;
+//     string tname;
+//     while(num_recomp_tensors--) {
+//       iss >> tname;
+//       recompute_tensors_[target_tensor].insert(tname);
+//     }
+
+//     while(iss >> feed_tensor) {
+//       params.feed_tensors.push_back(feed_tensor);
+//     }
+
+//     params.data_ready = DataStatus::OUT;
+//     params.buf = nullptr;
+//     params.using_count = 0;
+//     params.then_delete = false;
+//     string node_name = target_tensor.substr(0, target_tensor.find(':'));
+//     node_to_tensors_[node_name].push_back(target_tensor);
+
+//     auto& delete_trigger = triggers_[target_tensor];
+//     delete_trigger.tensor_name = target_tensor;
+//     delete_trigger.access_count = 0;
+//     delete_trigger.delete_trigger_count = del_cnt;
+//     delete_trigger.total_access_count = total1;
+
+//     if (compute_cnt > 0) {
+//       auto& compute_trigger = triggers_[trigger_tensor];
+//       compute_trigger.tensor_name = trigger_tensor;
+//       compute_trigger.access_count = 0;
+//       compute_trigger.total_access_count = total2;
+//       compute_trigger.recompute_tensors.resize(total2);
+//       compute_trigger.recompute_tensors[compute_cnt-1].push_back(target_tensor);
+//     }
+//   }
+//   fin.close();
+//   LOG(INFO) << "Recompute policy file loaded.";
+// }
+
 void RecomputeHelper::LoadRecomputePolicy() {
   std::string policy_file = GetEnv(recompute_policy_env);
   if (policy_file.empty()) {
@@ -249,22 +331,24 @@ void RecomputeHelper::LoadRecomputePolicy() {
     params.target_tensor = target_tensor;
     params.cv_mu = std::make_pair(std::make_shared<std::condition_variable>(), std::make_shared<std::mutex>());
 
-    recompute_tensors_[target_tensor].insert(target_tensor);
-    iss >> num_recomp_tensors;
-    string tname;
-    while(num_recomp_tensors--) {
-      iss >> tname;
-      recompute_tensors_[target_tensor].insert(tname);
-    }
+    // recompute_tensors_[target_tensor].insert(target_tensor);
+    // iss >> num_recomp_tensors;
+    // string tname;
+    // while(num_recomp_tensors--) {
+    //   iss >> tname;
+    //   recompute_tensors_[target_tensor].insert(tname);
+    // }
 
-    while(iss >> feed_tensor) {
-      params.feed_tensors.push_back(feed_tensor);
-    }
+    // while(iss >> feed_tensor) {
+    //   params.feed_tensors.push_back(feed_tensor);
+    // }
 
     params.data_ready = DataStatus::OUT;
     params.buf = nullptr;
     params.using_count = 0;
     params.then_delete = false;
+    params.self_trigger = false;
+    params.del = false;
     string node_name = target_tensor.substr(0, target_tensor.find(':'));
     node_to_tensors_[node_name].push_back(target_tensor);
 
