@@ -20,7 +20,7 @@ static std::string GetEnv(const std::string& env) {
 }
 
 void RecomputeHelper::RecordTensorAccess(const std::string& tensor_name, const uint64 time_) {
-  LOG(INFO) << "RecordTensorAccess " << tensor_name;
+  // LOG(INFO) << "RecordTensorAccess " << tensor_name;
   if (tensor_recompute_params_.count(tensor_name)) {
     RecomputeTensor(tensor_name);
     auto& recompute_params = tensor_recompute_params_[tensor_name];

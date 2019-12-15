@@ -244,7 +244,7 @@ class LocalRendezvousImpl : public Rendezvous {
         done(Status::OK(), item.send_args, recv_args, item.value, item.is_dead);
         return;
       }
-      LOG(INFO) << "Recv " << this << " " << key_hash << " " << key.FullKey();
+      // LOG(INFO) << "Recv " << this << " " << key_hash << " " << key.FullKey();
       // There is no message to pick up.
       // Only recv-related fields need to be filled.
       Item* item = new Item;
@@ -341,7 +341,7 @@ class LocalRendezvousImpl : public Rendezvous {
     for (auto& i : key_item_map_) {
       total_bytes += i.second.value.TotalBytes();
     }
-    LOG(INFO) << "Recv tensors total bytes is " << total_bytes;
+    // LOG(INFO) << "Recv tensors total bytes is " << total_bytes;
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(LocalRendezvousImpl);

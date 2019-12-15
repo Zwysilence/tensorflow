@@ -1968,7 +1968,7 @@ void ExecutorState::RecordTensorsAccess(const TaggedNode& tagged_node, const Ten
     if (std::strstr(item.node->name().c_str(), "Initializer")) continue;
 
     recompute_helper->RecordTensorAccess(tensor_val.name, tensor_val.readable_name, time_);
-    LOG(INFO) << tensor_val.name << " data: " << tensor_val.tensor->data() << " TotalBytes: " << tensor_val.tensor->TotalBytes();
+    // LOG(INFO) << tensor_val.name << " data: " << tensor_val.tensor->data() << " TotalBytes: " << tensor_val.tensor->TotalBytes();
     if (log_tensor_access) {
       if (!tensor_access_fout.is_open()) {
         LOG(ERROR) << "Failed to open /tmp/tensor_access.txt";
@@ -2040,7 +2040,7 @@ void ExecutorState::SetTensors(const NodeItem& item, const Entry* inputs, EntryV
       buffer = entry->val->buffer();
     }
     if (buffer_input_map.count(buffer)) {
-      LOG(INFO) << "Shared Tensors " << tensor_name << " and " << buffer_input_map[buffer]->tensor_name << " buffer=" << buffer;
+      // LOG(INFO) << "Shared Tensors " << tensor_name << " and " << buffer_input_map[buffer]->tensor_name << " buffer=" << buffer;
       entry->node->SharedTensorStatusWith(tensor_name, buffer_input_map[buffer]->node, buffer_input_map[buffer]->tensor_name);
     }
     entry->node->SetTensorDeleted(tensor_name, false);

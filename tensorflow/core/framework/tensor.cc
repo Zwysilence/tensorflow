@@ -1091,7 +1091,7 @@ void LogArray(int64 limit, int64 num_elts,
   PrintOneDim(0, shape, limit, shape_size, array, &data_index, &ret);
 
   if (num_elts > limit) strings::StrAppend(&ret, "...");
-  return ret;
+  // return ret;
 }
 
 // template <typename T>

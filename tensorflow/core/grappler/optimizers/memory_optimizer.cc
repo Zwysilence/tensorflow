@@ -1040,9 +1040,9 @@ static bool IdentifySwappingCandidates(
       if (!strings::safe_strto64(extra_required_savings_str,
                                  &extra_required_savings)) {
         LOG(WARNING) << "Invalid value for env-var: TF_EXTRA_REQUIRED_SAVINGS";
-      } else {
+      } /*else {
         LOG(INFO) << "Extra required savings is set to : " << extra_required_savings;
-      }
+        }*/
     }
 
     if (mem_usage.used_memory <= (gpu_mem_size+extra_required_savings)) {
@@ -1053,7 +1053,7 @@ static bool IdentifySwappingCandidates(
     }
     int64 required_savings = mem_usage.used_memory - prop.memory_size(); */
     int64 required_savings = mem_usage.used_memory - gpu_mem_size - extra_required_savings;
-    LOG(INFO) << "Total required savings: " << required_savings;
+    // LOG(INFO) << "Total required savings: " << required_savings;
 
     std::unordered_map<string, Costs::NanoSeconds> op_completion_times;
     {
@@ -1658,12 +1658,12 @@ Status MemoryOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
          optimization_level_ == RewriterConfig::MANUAL) &&
         cluster != nullptr) {
       if (swapping_option == 0) {
-        LOG(INFO) << "Use Tensorflow default SwappingPass";
+        // LOG(INFO) << "Use Tensorflow default SwappingPass";
         updated_graph |= SwappingPass(optimization_level_, cluster,
                                       &optimized_item, &skip_list);
       }
       else if (swapping_option == 1) {
-        LOG(INFO) << "Use vDNN SwappingPass";
+        // LOG(INFO) << "Use vDNN SwappingPass";
         updated_graph |= SwappingPassvDNN(optimization_level_, cluster,
                                       &optimized_item);
       }
