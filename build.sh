@@ -13,7 +13,7 @@ tf_ver="1.11.0"
 # dst_dir="latest_pkg"
 dst_dir="tensorflow_pkg"
 
-bazel build ${dbg_opt} --config=v1 --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
+bazel build ${dbg_opt} --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
 ./bazel-bin/tensorflow/tools/pip_package/build_pip_package ${HOME}/vfonel/tmp/${dst_dir}
 echo y > ${HOME}/vfonel/y
 pip uninstall tensorflow < ${HOME}/vfonel/y
